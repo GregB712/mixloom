@@ -14,13 +14,20 @@ These scripts do not download or analyze audio files and do not modify existing 
 
 ## Dashboard app (Streamlit)
 
-`app.py` is a local web UI over the same scripts. Install the requirements (section 2), then run:
+`app.py` is a local web UI over the same scripts.
+
+To launch it, open a terminal in the project folder, activate the virtual environment, make sure the requirements are installed (section 2), then run Streamlit:
 
 ```bash
+cd /path/to/spotify_ai_dj_scripts
+source .venv/bin/activate
+python -m pip install -r requirements.txt   # first time only
 streamlit run app.py
 ```
 
-It opens in your browser with two tabs:
+Streamlit starts a local server and opens the app in your browser (default: http://localhost:8501). If a browser does not open automatically, copy the Local URL it prints into your browser. Press `Ctrl+C` in the terminal to stop it.
+
+The app opens with two tabs:
 
 - **Run pipeline** — export playlists, run both enrichment steps on a chosen CSV (their progress streams live), and create a playlist from a CSV. A sidebar shows which `.env` values are set.
 - **Dashboard** — pick any CSV in `spotify_exports/` and view totals (tracks, unique artists, albums, total length), top artists and source playlists, artist-country and Greek-artist breakdowns, and audio-feature distributions (BPM, energy, Camelot key, genre, mood, and more). Charts appear only for columns the CSV actually contains.
