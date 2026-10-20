@@ -10,6 +10,9 @@ musicbrainz_artist_cache.json
 spotify_exports/*
 !spotify_exports/.gitkeep
 
+# Local project guidelines
+CLAUDE_Guidelines.md
+
 # Python
 .venv/
 __pycache__/
