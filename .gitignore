@@ -1,0 +1,16 @@
+# Secrets and local credentials
+.env
+.spotify_token_cache
+.spotify_playlist_create_token_cache
+
+# Local caches
+musicbrainz_artist_cache.json
+
+# Personal playlist exports
+spotify_exports/*
+!spotify_exports/.gitkeep
+
+# Python
+.venv/
+__pycache__/
+*.pyc
