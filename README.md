@@ -10,6 +10,22 @@ These scripts do not download or analyze audio files and do not modify existing 
 - `enrich_artist_countries.py` — look up all credited artists on every track using MusicBrainz, cache results locally, and append country and Greek-artist classification columns.
 - `enrich_spotify_csv.py` — submit CSV rows to the FreqBlog bulk CSV endpoint and append the feature columns returned by that service, such as BPM, key, Camelot key, energy, and other fields when available.
 - `create_spotify_playlist.py` — read Spotify track URIs from an exported CSV and create a new private playlist from them. This is the only script that writes to your Spotify account; it requests the `playlist-modify-private` scope and uses a separate token cache.
+- `app.py` — a Streamlit app that runs the scripts above from buttons and inspects any exported CSV in a dashboard with summary statistics and charts.
+
+## Dashboard app (Streamlit)
+
+`app.py` is a local web UI over the same scripts. Install the requirements (section 2), then run:
+
+```bash
+streamlit run app.py
+```
+
+It opens in your browser with two tabs:
+
+- **Run pipeline** — export playlists, run both enrichment steps on a chosen CSV (their progress streams live), and create a playlist from a CSV. A sidebar shows which `.env` values are set.
+- **Dashboard** — pick any CSV in `spotify_exports/` and view totals (tracks, unique artists, albums, total length), top artists and source playlists, artist-country and Greek-artist breakdowns, and audio-feature distributions (BPM, energy, Camelot key, genre, mood, and more). Charts appear only for columns the CSV actually contains.
+
+Spotify's browser sign-in can't run inside Streamlit. Authorize once from a terminal (`python spotify_playlist_export.py` for the read scope, `python create_spotify_playlist.py` for the write scope); afterwards the token caches let those steps run from the app.
 
 ## 1. Requirements
 

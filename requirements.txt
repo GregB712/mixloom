@@ -2,3 +2,6 @@ spotipy
 python-dotenv
 requests
 pycountry
+streamlit
+pandas
+altair
