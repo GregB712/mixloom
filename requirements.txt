@@ -1,7 +1,20 @@
+# Single virtualenv for both the CLI scripts and the web app backend.
+
+# CLI scripts (scripts/)
 spotipy
 python-dotenv
 requests
 pycountry
-streamlit
+
+# Local audio analysis (scripts/analyze_local_audio.py).
+# librosa also needs ffmpeg on PATH to decode .mp3/.m4a.
+librosa
+mutagen
+
+# Postgres metadata DB (scripts/db_init.py, scripts/db_import.py).
+psycopg[binary]
+
+# Web app backend (web/backend)
+fastapi
+uvicorn
 pandas
-altair

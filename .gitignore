@@ -2,6 +2,7 @@
 .env
 .spotify_token_cache
 .spotify_playlist_create_token_cache
+.spotify_player_token_cache
 
 # Local caches
 musicbrainz_artist_cache.json
@@ -17,3 +18,8 @@ CLAUDE_Guidelines.md
 .venv/
 __pycache__/
 *.pyc
+
+# Web app build artifacts
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/*.tsbuildinfo

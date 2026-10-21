@@ -1,0 +1,27 @@
+# Local Postgres for the track/artist metadata.
+# Start:  docker compose -f db/docker-compose.yml up -d
+# The schema is applied automatically on first start (initdb), so the database
+# comes up with all tables already created. Matches the default DATABASE_URL:
+#   postgresql://spotify:spotify@localhost:5432/spotify_meta
+services:
+  db:
+    image: postgres:16
+    container_name: spotify_meta_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spotify
+      POSTGRES_PASSWORD: spotify
+      POSTGRES_DB: spotify_meta
+    ports:
+      - "5432:5432"
+    volumes:
+      - spotify_meta_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spotify -d spotify_meta"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  spotify_meta_data:

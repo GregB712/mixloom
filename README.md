@@ -1,294 +1,285 @@
-# Spotify Playlist CSV Tools
+# Spotify Playlist Tools
 
-Four Python scripts to export Spotify playlists to CSV, enrich tracks with audio-feature metadata from FreqBlog, look up the associated countries of every credited artist using MusicBrainz, and build a new Spotify playlist from an exported CSV.
+Build and understand Spotify playlists from richer metadata than Spotify exposes
+in its own app. Export your playlists into a local **Postgres** database, enrich
+the tracks with artist-country data (MusicBrainz) and audio features (FreqBlog or
+local audio analysis), then **curate** new playlists with metadata filters, "vibe"
+grouping, and DJ-style key/tempo ordering — and **play** them in the browser.
 
-These scripts do not download or analyze audio files and do not modify existing Spotify playlists. The exporter and the enrichment scripts read playlist contents and read and write CSV files; the playlist builder creates a new private playlist from a CSV.
+You can use everything **two ways**:
 
-## Contents
+- **Web app** in `web/` — a four-tab UI (Run pipeline · Curate · Dashboard ·
+  Player) with live job logs and charts. This is the primary interface.
+- **CLI scripts** in `scripts/` — run each pipeline step ad hoc from a terminal.
 
-- `spotify_playlist_export.py` — authenticate with Spotify, select one or more playlists, export each selected playlist to its own CSV, then create a merged CSV with duplicate tracks removed and rows sorted by title and artist.
-- `enrich_artist_countries.py` — look up all credited artists on every track using MusicBrainz, cache results locally, and append country and Greek-artist classification columns.
-- `enrich_spotify_csv.py` — submit CSV rows to the FreqBlog bulk CSV endpoint and append the feature columns returned by that service, such as BPM, key, Camelot key, energy, and other fields when available.
-- `create_spotify_playlist.py` — read Spotify track URIs from an exported CSV and create a new private playlist from them. This is the only script that writes to your Spotify account; it requests the `playlist-modify-private` scope and uses a separate token cache.
-- `app.py` — a Streamlit app that runs the scripts above from buttons and inspects any exported CSV in a dashboard with summary statistics and charts.
+Both share the same `.env`, the same Postgres database, and the same Spotify
+token caches, so you can mix and match freely.
 
-## Dashboard app (Streamlit)
+> **New here?** See [`docs/overview.md`](docs/overview.md) for what the app does
+> and every capability, and [`docs/architecture.md`](docs/architecture.md) for
+> how it's built and the data model.
 
-`app.py` is a local web UI over the same scripts.
+## Repository layout
 
-To launch it, open a terminal in the project folder, activate the virtual environment, make sure the requirements are installed (section 2), then run Streamlit:
-
-```bash
-cd /path/to/spotify_ai_dj_scripts
-source .venv/bin/activate
-python -m pip install -r requirements.txt   # first time only
-streamlit run app.py
+```text
+scripts/                       CLI tools (each runnable on its own)
+  spotify_playlist_export.py     export selected playlists -> Postgres (no merge)
+  enrich_artist_countries.py     add artist country via MusicBrainz -> DB
+  enrich_spotify_csv.py          add audio features via FreqBlog -> DB
+  analyze_local_audio.py         estimate features from local audio files -> DB
+  create_spotify_playlist.py     create a private Spotify playlist from a DB playlist
+  import_manual.py               import hand-filled metadata JSON -> DB
+  db_init.py                     create the DB and apply the schema (idempotent)
+  db_import.py                   seed the DB from an existing exported CSV
+  dbutil.py                      shared DB helpers (connection, upserts, coercion)
+db/
+  schema.sql                     table definitions (tracks, artists, playlists, links)
+  docker-compose.yml             local Postgres 16 (auto-applies schema on first boot)
+web/
+  backend/                       FastAPI app: wraps the scripts, serves DB data
+  frontend/                      React + TypeScript + Vite UI
+  dev.sh                         start backend + frontend together (+ DB check)
+docs/                           overview and architecture documentation
+requirements.txt               Python deps for scripts + backend (one venv)
+.env / .env.example            credentials + DATABASE_URL (real .env is git-ignored)
 ```
 
-Streamlit starts a local server and opens the app in your browser (default: http://localhost:8501). If a browser does not open automatically, copy the Local URL it prints into your browser. Press `Ctrl+C` in the terminal to stop it.
+The scripts resolve `.env`, the caches, and `db/schema.sql` relative to the repo
+root, so they work no matter which directory you run them from.
 
-The app opens with two tabs:
+## 1. Prerequisites
 
-- **Run pipeline** — export playlists, run both enrichment steps on a chosen CSV (their progress streams live), and create a playlist from a CSV. A sidebar shows which `.env` values are set.
-- **Dashboard** — pick any CSV in `spotify_exports/` and view totals (tracks, unique artists, albums, total length), top artists and source playlists, artist-country and Greek-artist breakdowns, and audio-feature distributions (BPM, energy, Camelot key, genre, mood, and more). Charts appear only for columns the CSV actually contains.
+- Python 3.10+
+- Node.js 18+ and npm (for the web app)
+- Docker (for the local Postgres database) — or any reachable Postgres 16
+- A Spotify account and a [Spotify Developer app](https://developer.spotify.com/dashboard/)
+- **Spotify Premium** — only for the in-browser Player tab
+- A FreqBlog API key — only for FreqBlog audio-feature enrichment
+- `ffmpeg` — only for local audio analysis of `.mp3`/`.m4a` files
+- Internet access
 
-Spotify's browser sign-in can't run inside Streamlit. Authorize once from a terminal (`python spotify_playlist_export.py` for the read scope, `python create_spotify_playlist.py` for the write scope); afterwards the token caches let those steps run from the app.
+MusicBrainz needs no API key, only a contact email sent in its User-Agent.
 
-## 1. Requirements
+## 2. Setup
 
-- Python 3.10 or newer.
-- A Spotify account and a Spotify Developer app for playlist export.
-- A FreqBlog API key for audio-feature enrichment.
-- Internet access for API requests.
+### 2.1 Python environment
 
-MusicBrainz does not require an API key for the kind of artist lookup performed here. Its service asks clients to identify themselves with a valid User-Agent and to observe its request rate limit.
-
-## 2. Create the Python environment (Linux/Ubuntu)
-
-Open a terminal in the directory where you want to keep the project. If Python and virtual-environment support are not installed, run:
-
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip
-```
-
-Unzip the downloaded package or place the three scripts and this README in a project folder. Then enter that folder and create a virtual environment:
+From the repo root:
 
 ```bash
-cd spotify_ai_dj_scripts
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Whenever you open a new terminal, activate the environment again:
+Re-activate with `source .venv/bin/activate` in each new terminal.
+
+### 2.2 Credentials (`.env`)
+
+Copy the example and fill in real values:
 
 ```bash
-cd /path/to/spotify_ai_dj_scripts
-source .venv/bin/activate
+cp .env.example .env
 ```
-
-Replace `/path/to/spotify_ai_dj_scripts` with the actual folder location.
-
-## 3. Configure Spotify API access
-
-1. Open the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/) and sign in with the Spotify account you want to use.
-2. Create an app, for example `Spotify CSV Exporter`.
-3. In the app settings, add this Redirect URI exactly:
-
-   ```text
-   http://127.0.0.1:8888/callback
-   ```
-
-4. Save the setting and copy the app's Client ID and Client Secret.
-5. Check Spotify's current Developer Mode requirements and endpoint access in the dashboard and documentation. Spotify account eligibility and playlist access restrictions can change.
-
-Create a file named `.env` in the same directory as the scripts:
 
 ```dotenv
-SPOTIPY_CLIENT_ID=paste_your_spotify_client_id_here
-SPOTIPY_CLIENT_SECRET=paste_your_spotify_client_secret_here
+SPOTIPY_CLIENT_ID=your_spotify_client_id
+SPOTIPY_CLIENT_SECRET=your_spotify_client_secret
 SPOTIPY_REDIRECT_URI=http://127.0.0.1:8888/callback
-FREQBLOG_API_KEY=paste_your_freqblog_api_key_here
-CONTACT_EMAIL=your-email@example.com
+FREQBLOG_API_KEY=your_freqblog_api_key
+CONTACT_EMAIL=you@example.com
+# Optional — defaults to the docker-compose database below:
+# DATABASE_URL=postgresql://spotify:spotify@localhost:5432/spotify_meta
 ```
 
-Copy `.env.example` to `.env` as a starting point, then replace the placeholder values. Keep this file private. Do not send it to anyone, upload it to a public repository, or include it when sharing the scripts.
+`FREQBLOG_API_KEY` is only needed for FreqBlog enrichment; `CONTACT_EMAIL` only
+for country enrichment. `DATABASE_URL` is optional — it defaults to the
+docker-compose database. Keep `.env` private (it is git-ignored).
 
-The Spotify exporter requests these read permissions:
+### 2.3 Register the Spotify redirect URI
 
-- `playlist-read-private`
-- `playlist-read-collaborative`
-
-On first run, a browser window opens for Spotify authorization. Sign in and approve the request. Spotipy stores a token cache locally so repeated runs usually do not require a fresh authorization. If you revoke access or need to reauthorize, remove `.spotify_token_cache` and run the exporter again.
-
-## 4. Configure MusicBrainz contact information
-
-Set `CONTACT_EMAIL` in `.env` to a real email address that can be used to contact you about the script's API requests. This identifies the script in its MusicBrainz User-Agent. `enrich_artist_countries.py` exits with an error if `CONTACT_EMAIL` is not set.
-
-The script creates `musicbrainz_artist_cache.json` in the directory from which you run it. The cache stores successful, unknown, and ambiguous name lookups so the script does not needlessly request the same artist again. Keep this file if you want to reuse cached results. If you remove it, artist lookups will need to be made again.
-
-## 5. Step 1 — Export Spotify playlists
-
-Run with no arguments to list playlists visible to your Spotify account and choose which to export:
-
-```bash
-python spotify_playlist_export.py
-```
-
-At the prompt:
-
-- Enter numbers separated by commas, such as `1,3,5`, to select particular playlists.
-- Enter `all` to select every listed playlist.
-- Enter `q` to cancel.
-
-Alternatively, pass playlist IDs directly:
-
-```bash
-python spotify_playlist_export.py "PLAYLIST_ID_1,PLAYLIST_ID_2"
-```
-
-A playlist ID is the part after `/playlist/` in a Spotify playlist URL.
-
-### Output
-
-The script creates a `spotify_exports/` folder containing one CSV per selected playlist and a merged CSV:
+In your Spotify app settings, add this Redirect URI **exactly**, matching
+`SPOTIPY_REDIRECT_URI`:
 
 ```text
-spotify_exports/
-├── Playlist_Name__12345678.csv
-├── Another_Playlist__abcdefgh.csv
-└── merged_playlists.csv
+http://127.0.0.1:8888/callback
 ```
 
-Actual filenames use a sanitized playlist name plus a short part of its ID. The merged CSV removes duplicate tracks using the Spotify track URI where possible, retains which source playlist(s) included each track in `source_playlists`, and sorts the rows alphabetically by title and artist.
+This single URI serves every Spotify authorization — read (export), write
+(create playlist), and player (streaming). If you change `SPOTIPY_REDIRECT_URI`,
+register the new value too.
 
-Important columns include:
-
-- `title`, `artists`, `album`, `duration_ms`
-- `artist_names_json` — JSON array containing the exact credited artist names, preserving boundaries even when a name contains a comma
-- `isrc`, when supplied by Spotify
-- `spotify_url`, `spotify_uri`
-- `position` and `source_playlists`
-
-Keep `artist_names_json` when passing files to the country script. It helps the script look up each artist separately. If you use an older CSV without this column, the country script falls back to parsing the comma-separated `artists` value, which can be ambiguous for artist names containing commas.
-
-## 6. Step 2 — Enrich the CSV with artist countries
-
-Run the country enrichment script against the merged export:
+### 2.4 Start the database
 
 ```bash
-python enrich_artist_countries.py
+docker compose -f db/docker-compose.yml up -d
 ```
 
-With no argument, it reads `spotify_exports/merged_playlists.csv`. You can provide a different file path:
+Postgres 16 comes up on `localhost:5432` with user/password/db
+`spotify`/`spotify`/`spotify_meta`, and the schema in `db/schema.sql` is applied
+automatically on first boot. Data persists in a named Docker volume.
+
+Using your own Postgres instead? Set `DATABASE_URL` in `.env` and create the
+tables once with:
 
 ```bash
-python enrich_artist_countries.py "spotify_exports/Playlist_Name__12345678.csv"
+python scripts/db_init.py
 ```
 
-The script queries MusicBrainz for every distinct credited artist on each track. Repeated artists use the local cache rather than triggering another lookup. Requests are rate-limited to avoid sending queries too quickly.
+## 3. Use the web app
 
-### Output
+The web app runs the pipeline steps as background jobs with live-streaming logs,
+and serves the Curate, Dashboard, and Player tabs from the database.
 
-The input file is not overwritten. The output file is named by adding `_countries` before `.csv`:
+### 3.1 Install the frontend (first time)
+
+```bash
+cd web/frontend
+npm install
+cd ../..
+```
+
+### 3.2 Run
+
+```bash
+./web/dev.sh
+```
+
+It checks the database is reachable, then starts the FastAPI backend (default
+`http://127.0.0.1:8888`, read from `SPOTIPY_REDIRECT_URI`) and the Vite frontend
+(`http://localhost:5173`). Open the frontend URL. Stop both with `Ctrl+C`.
+
+> Open the frontend via `localhost` or `127.0.0.1`. The Player tab uses Spotify's
+> Web Playback SDK, which only runs in a secure context — a bare LAN IP won't work.
+
+To run them separately:
+
+```bash
+# Backend
+.venv/bin/python -m uvicorn main:app --app-dir web/backend --host 127.0.0.1 --port 8888 --reload
+
+# Frontend
+cd web/frontend && npm run dev
+```
+
+The frontend proxies `/api` to the backend, so you only open the frontend URL.
+
+### 3.3 The four tabs
+
+- **Run pipeline** — a card per step. **Export** (connect Spotify read, refresh
+  and pick playlists) downloads them into the DB. **Enrich artist countries** and
+  **Enrich audio features** target selected playlists (or all) and run only on
+  rows still missing that metadata; each card shows a "missing / total" count and
+  can download a JSON template of the rows still missing, to fill by hand.
+  **Analyse downloaded files** estimates features from a local audio folder for
+  tracks the APIs couldn't fill. **Create playlist** pushes a DB playlist to
+  Spotify (needs write access). Every run opens a live log panel.
+- **Curate** — build a new playlist from metadata already in the DB. Multi-select
+  source playlists (duplicates removed across them), then **pick tracks manually**
+  with a filter per metadata field (genre, mood, Camelot key, Greek, album text,
+  and BPM/energy/valence/danceability/acousticness/duration ranges) or
+  **auto-group by vibe** (energy × mood quadrants, tempo bands, Partying
+  Greek/non-Greek, FreqBlog mood, or genre). Order the selection for smooth
+  DJ-style transitions (greedy Camelot + BPM + energy), a plain BPM/energy ramp,
+  or by hand with drag-and-drop — with per-track key/BPM/energy chips and a
+  mix-quality dot between tracks. Save to the DB, and with write access create the
+  private Spotify playlist in that exact order.
+- **Dashboard** — pick one playlist or the whole library and view metrics (tracks,
+  unique artists, albums, duration, % Greek, median BPM), top artists, tracks per
+  source playlist, country/Greek/lookup-status breakdowns, audio-feature
+  histograms and category charts, and a searchable paginated table. Sections
+  appear only for the metadata the selection actually has.
+- **Player** — connect Spotify (player scope, **Premium required**) and play your
+  DB playlists — both exported and ones you curated — in the browser. Per-track
+  and "play all" buttons, a now-playing bar (prev / play-pause / next), and
+  playback that keeps going while you switch tabs.
+
+## 4. Use the CLI scripts
+
+Run from the repo root. Spotify authorization opens a browser on first use for
+each scope; the token is cached so later runs are non-interactive. All scripts
+accept `--database-url` to override `DATABASE_URL`.
+
+```bash
+# Export playlists into the DB (interactive picker, or pass playlist IDs)
+python scripts/spotify_playlist_export.py
+python scripts/spotify_playlist_export.py 37i9dQ...,2lb8e...
+
+# Enrich artist countries (all artists missing a country, or scope to playlists)
+python scripts/enrich_artist_countries.py
+python scripts/enrich_artist_countries.py --playlists 1,2,3
+python scripts/enrich_artist_countries.py --all      # re-resolve everything
+
+# Enrich audio features from FreqBlog (feature-less tracks only, by default)
+python scripts/enrich_spotify_csv.py
+python scripts/enrich_spotify_csv.py --playlists 1,2,3
+
+# Estimate features from local audio files (for tracks the APIs couldn't fill)
+python scripts/analyze_local_audio.py /path/to/audio --playlists 1,2,3
+python scripts/analyze_local_audio.py /path/to/audio --seconds 0   # whole file
+
+# Create a private Spotify playlist from a DB playlist (by its DB id)
+python scripts/create_spotify_playlist.py 5 "My New Playlist"
+
+# Import hand-filled metadata JSON (type auto-detected) back into the DB
+python scripts/import_manual.py artists_missing_country.json
+python scripts/import_manual.py tracks_missing_features.json
+```
+
+Incremental by design: the enrich steps only touch rows still missing that
+metadata unless you pass `--all`. Country lookups are cached in
+`musicbrainz_artist_cache.json` and rate-limited (~1.1s per new artist), so large
+libraries take minutes the first time and are fast afterward.
+
+To migrate data from an older CSV export into the DB, use `scripts/db_import.py`
+(see its `--help`).
+
+## 5. Data model
+
+All metadata lives in Postgres. See [`docs/architecture.md`](docs/architecture.md)
+for the full schema; in short:
+
+- **`tracks`** — one row per track (deduplicated by `spotify_uri`), with base
+  fields and all audio-feature columns; `feature_source` records where the
+  features came from (`freqblog`, `local-estimate`, or `manual`).
+- **`artists`** — one row per artist (unique name) with `country_code` /
+  `country_name` / `country_status`.
+- **`playlists`** — exported playlists (`spotify_id` set) and in-app curated ones
+  (`curated = TRUE`); tracks are kept distinct, never merged.
+- **`track_artists`** and **`playlist_tracks`** — ordered many-to-many links.
+
+## 6. Data and privacy
+
+Secrets never reach the browser; the backend holds all tokens. Only
+`create_spotify_playlist.py` (and the Player's playback control) writes to your
+Spotify account, and it only creates new private playlists.
+
+These are git-ignored and should stay private:
 
 ```text
-spotify_exports/merged_playlists_countries.csv
-```
-
-Added columns:
-
-- `artist_countries` — distinct country names across credited artists
-- `artist_country_codes` — distinct country codes, such as `GR`
-- `artist_country_details` — country and lookup status per artist
-- `artist_country_status` — `complete`, `partial`, `ambiguous`, or `unknown`
-- `greek_artist` — `Yes` if any matched artist is associated with Greece, `No` if all artists have known non-Greek associated countries, otherwise `Unknown`
-
-MusicBrainz's country is an artist's associated/main country in its database; it is not guaranteed to represent nationality or citizenship. `Unknown` means the source data did not support a reliable classification. An ambiguous or missing match should not be interpreted as proof that an artist is not Greek.
-
-## 7. Step 3 — Enrich the CSV with audio features
-
-Make sure `FREQBLOG_API_KEY` is set in `.env`, then run:
-
-```bash
-python enrich_spotify_csv.py
-```
-
-With no argument, this reads `spotify_exports/merged_playlists.csv`. To enrich the CSV that already contains country columns, pass its path:
-
-```bash
-python enrich_spotify_csv.py "spotify_exports/merged_playlists_countries.csv"
-```
-
-The script sends the rows to FreqBlog's bulk CSV endpoint in batches of up to 500 rows. It uses the first credited artist and title for matching, preferring `artist_names_json` where available. It retries rows marked as still processing, then retains rows that remain pending or are not found. The original CSV is never overwritten.
-
-The resulting filename adds `_enriched` to the input's basename. For the country-enriched file above, it is:
-
-```text
-spotify_exports/merged_playlists_countries_enriched.csv
-```
-
-FreqBlog's returned field names and available features depend on its service and track matching. The output appends returned columns; possible fields include BPM/tempo, standard key, Camelot notation, mode, energy, danceability, acousticness, instrumentalness, loudness and valence. Some values may be unavailable, estimated, or not returned. The script does not infer missing values itself. Review `found`, `backfill_status`, and any reason/status fields returned by the API to understand unsuccessful or pending matches.
-
-The API plan's quota and billing rules may change. Check the current FreqBlog account/dashboard before processing a large library. The script submits rows in batches, but a batch does not necessarily count as one API request for quota purposes.
-
-## 8. Optional — Create a Spotify playlist from a CSV
-
-`create_spotify_playlist.py` reads Spotify track URIs from any exported CSV and creates a new private playlist in your account. It needs the `spotify_uri` column (or falls back to extracting the track ID from `spotify_url`).
-
-Because it writes to your account, it requests the `playlist-modify-private` scope and uses a separate token cache (`.spotify_playlist_create_token_cache`), so Spotify prompts for the new permission on first run.
-
-```bash
-python create_spotify_playlist.py "spotify_exports/merged_playlists.csv" "My New Playlist"
-```
-
-With no arguments, it prompts for the CSV path and playlist name. It shows a summary and asks for confirmation before creating anything. Tracks are added in batches of 100, preserving CSV order.
-
-## 9. Recommended complete workflow
-
-To produce one file containing Spotify metadata, artist-country information, and the audio features returned by FreqBlog, run these commands in order:
-
-```bash
-# 1. Export and select playlists
-python spotify_playlist_export.py
-
-# 2. Add MusicBrainz artist-country information
-python enrich_artist_countries.py
-
-# 3. Add FreqBlog metadata to the country-enriched CSV
-python enrich_spotify_csv.py "spotify_exports/merged_playlists_countries.csv"
-```
-
-The combined result is:
-
-```text
-spotify_exports/merged_playlists_countries_enriched.csv
-```
-
-You can reverse the two enrichment steps if preferred: the country script can also process the audio-enriched CSV, producing `merged_playlists_enriched_countries.csv`. Both enrichment scripts retain the columns already present in the input.
-
-## 10. Troubleshooting
-
-### `Missing .env variables`
-
-Check that `.env` is in the current working directory, that variable names are exact, and that values have no extra quotation marks or spaces. The scripts load `.env` relative to the directory where they are run.
-
-### Spotify authorization or HTTP 403 errors
-
-Verify the Client ID, Client Secret, and Redirect URI. Confirm that the Spotify app meets the current Development Mode requirements and that the playlist is accessible to the authorized account. Spotify can restrict playlist reads by playlist ownership/collaboration and by app access. A playlist can be visible in Spotify but inaccessible through the API.
-
-If changing scopes does not trigger a new consent screen, remove `.spotify_token_cache` and authenticate again.
-
-### `FREQBLOG_API_KEY is missing`
-
-Check the `.env` file and make sure the key is assigned to `FREQBLOG_API_KEY` exactly. If a request is rejected, verify that the key is valid and that you have remaining quota.
-
-### Missing audio features or tracks marked not found
-
-The service may not have a match for every track, or may return pending/unavailable statuses. The script retains the row and appends status fields returned by the API where available. Re-running may use more quota; check the provider's retry guidance and current plan first.
-
-### Country script stops on a network error
-
-The script saves the country cache after each new artist. Fix the network/API issue and rerun the same command. Already-cached artist lookups are reused. A slow run is expected for many unique artists because requests are rate-limited.
-
-### Script cannot find the input CSV
-
-Run from the project directory or pass the full/relative path to the CSV as the first argument. Quote file paths containing spaces.
-
-## 11. Protect local credentials and caches
-
-Do not share `.env`, `.spotify_token_cache`, `.spotify_playlist_create_token_cache`, or other token/cache files. This repository already includes a `.gitignore` covering them:
-
-```gitignore
 .env
 .spotify_token_cache
 .spotify_playlist_create_token_cache
+.spotify_player_token_cache
 musicbrainz_artist_cache.json
-spotify_exports/
-.venv/
-__pycache__/
 ```
 
-CSV exports contain your playlist information, so `spotify_exports/` is git-ignored by default. Only `spotify_exports/.gitkeep` is tracked, to preserve the folder. Remove the `spotify_exports/` line from `.gitignore` if you deliberately want to commit exports.
+The Postgres data lives in a Docker volume (`spotify_meta_data`), not in the repo.
+
+## 7. Troubleshooting
+
+- **"Missing .env variables"** — a required key is unset; see section 2.2.
+- **Backend errors / "Loading…" never finishes** — the database isn't reachable.
+  Start it with `docker compose -f db/docker-compose.yml up -d`; `web/dev.sh`
+  prints a reachability check on startup.
+- **Spotify 403 / no playlists** — check your app's Developer Mode settings and
+  that the account is allowed; re-authorize if needed.
+- **Player shows "Premium required" or won't play** — the Web Playback SDK needs
+  a Spotify Premium account and a secure context; open the app via `localhost`.
+- **Country enrichment is slow** — expected; MusicBrainz is rate-limited. The
+  local cache makes later runs fast.
+- **Local analysis can't decode a file** — install `ffmpeg` for `.mp3`/`.m4a`
+  (`.wav`/`.flac`/`.ogg` decode without it).
+- **OAuth redirect mismatch** — the registered Redirect URI must equal
+  `SPOTIPY_REDIRECT_URI` exactly.
