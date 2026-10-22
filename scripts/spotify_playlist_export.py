@@ -84,12 +84,15 @@ def get_playlist_tracks(spotify: spotipy.Spotify, playlist_id: str) -> tuple[str
                 if str(a.get("name", "")).strip()
             ]
             album = track.get("album") or {}
+            images = album.get("images") or []
             tracks.append({
                 "spotify_uri": uri,
                 "title": track.get("name") or "",
                 "artists_text": ", ".join(artist_names),
                 "artist_names": artist_names,
                 "album": (album.get("name") or "") or None,
+                # Spotify returns album images largest-first; keep the first URL.
+                "album_art_url": (images[0].get("url") if images else None) or None,
                 "duration_ms": track.get("duration_ms"),
                 "isrc": (track.get("external_ids") or {}).get("isrc") or None,
                 "spotify_url": (track.get("external_urls") or {}).get("spotify") or None,

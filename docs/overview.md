@@ -2,7 +2,7 @@
 
 ## What this app is
 
-**Spotify Playlist Tools** is a personal, self-hosted app for building and
+**Mixloom** is a personal, self-hosted app for building and
 understanding Spotify playlists using **more metadata than the Spotify app
 exposes** — artist country, musical key (Camelot), BPM, energy, valence,
 danceability, mood, genre, and more.
@@ -38,10 +38,10 @@ Each step reads from and writes to the shared Postgres database. Steps are
 |------|--------|--------|-------|
 | **Export** | Spotify API (read) | `tracks`, `artists`, `playlists` | Per-playlist, no merge. Tracks deduplicated by URI across the whole library. |
 | **Enrich countries** | MusicBrainz | `artists.country_*` | Cached + rate-limited. Only artists missing a country, unless `--all`. |
-| **Enrich features** | FreqBlog bulk-CSV | `tracks` audio features | Only feature-less tracks, unless `--all`. `feature_source = freqblog`. |
+| **Enrich features** | Pluggable provider (FreqBlog or Last.fm) | `tracks` audio features / tags | Only feature-less tracks, unless `--all`. `feature_source` names the provider. |
 | **Analyse local audio** | Your audio files (librosa) | `tracks` audio features | For tracks the APIs couldn't fill. `feature_source = local-estimate`. |
 | **Manual import** | Hand-filled JSON | `artists` / `tracks` | For rows you fill in yourself. `*_status`/`feature_source = manual`. |
-| **Create playlist** | A DB playlist | Spotify (write) | Creates a new **private** playlist in exact order. |
+| **Create / update playlist** | A DB playlist | Spotify (write) | Creates a new **private** playlist, or updates the one it created before in place (`--update`). |
 
 ### A note on honesty of the data
 
@@ -79,15 +79,23 @@ Each step reads from and writes to the shared Postgres database. Steps are
   - *Tempo bands* (Warm-up / Groove / Peak / High-energy),
   - *Partying* (Greek vs non-Greek),
   - *FreqBlog mood*, or *Genre*.
+- **Save a filter set** as a reusable "smart playlist" and re-apply it in one click.
 - **DJ-style ordering** of the chosen set:
   - *Smooth* — greedy "best next track" over Camelot-key compatibility, BPM
     proximity, and energy flow;
+  - *Energy curve* — a warm-up that rises to a mid-set peak, then cools down;
   - *BPM ramp* or *Energy ramp*;
   - *Manual* — drag and drop to reorder by hand.
-- Per-track **key / BPM / energy chips** and a **mix-quality dot** (great / ok /
-  jump) between consecutive tracks.
+- Per-track **album art**, **key / BPM / energy chips**, and a **mix-quality dot**
+  (great / ok / jump) between consecutive tracks.
+- **Undo** the last edit, and **✨ More like this** to pull in nearest-neighbour
+  tracks by audio-feature similarity (local, no external API).
+- **Play the built playlist** from the "Your playlist" panel when the player is
+  connected.
 - **Save** the ordered result as a curated playlist in the DB; with write access,
-  create the matching private Spotify playlist in that exact order.
+  create the matching private Spotify playlist in that exact order. You can also
+  **open an existing curated playlist** back into the builder and save changes in
+  place (updating its Spotify copy when it has one).
 
 ### Dashboard tab
 - Inspect one playlist or the whole library.
@@ -96,6 +104,11 @@ Each step reads from and writes to the shared Postgres database. Steps are
 - Charts: top artists, tracks per source playlist, top country codes, Greek
   classification, lookup status, audio-feature histograms, and category charts
   (Camelot / genre / mood).
+- A **Camelot wheel** visualising key distribution and harmonic-compatibility
+  clusters.
+- Whole-library only: a **library-health** panel (feature / album-art / country
+  coverage meters and feature-source breakdown) and **cross-library duplicate
+  detection** (the same recording under different URIs, grouped by ISRC).
 - Searchable, paginated raw-data table.
 - Sections appear only for the metadata the current selection actually has.
 
@@ -105,8 +118,30 @@ Each step reads from and writes to the shared Postgres database. Steps are
 - Lists your DB playlists — both exported and curated — and plays them by each
   track's Spotify URI, so a curated playlist you never pushed to Spotify plays
   just like an exported one.
-- Per-track and "play all" buttons, a now-playing bar (previous / play-pause /
-  next), and playback that continues while you switch tabs.
+- Per-track and "play all" buttons with **album art**, and playback that continues
+  while you switch tabs.
+- **Edit curated (database-only) playlists in place** — remove tracks, **drag to
+  reorder**, and **undo** — then save back to the database.
+- **Push a curated playlist to Spotify** (needs write access) either as a new
+  private playlist or **updating the existing Spotify playlist in place**.
+- For **exported** playlists, **check for drift** against Spotify (tracks
+  added/removed since export) and **re-import** to reconcile. Exported playlists
+  are otherwise read-only here.
+
+### Now-playing panel (every tab)
+- Playback is driven from a single floating now-playing panel that is available on
+  **every tab**, not just the Player — a small chip (bottom-left) that **expands on
+  hover or focus** into the full controls.
+- Shows album art, the current track and artists, **shuffle / previous /
+  play-pause / next / repeat**, a **seekable progress bar** with elapsed / total
+  time, a **volume slider with mute**, an **"up next"** queue, and a **device
+  picker** to transfer playback to a phone or speaker.
+- **Keyboard shortcuts** work anywhere outside a text field: Space = play/pause,
+  ←/→ = seek, ↑/↓ = volume.
+- Long playlists keep playing past the first 100 tracks — the queue extends
+  automatically as the current window runs down.
+- Appears whenever the player is connected and a track is loaded, and reflects
+  whatever is playing regardless of which tab started it.
 
 ## Two ways to use it
 
@@ -121,3 +156,5 @@ Both share the same database, `.env`, and Spotify token caches.
 - [README](../README.md) — install, configure, and run.
 - [architecture.md](architecture.md) — components, data flow, data model, and the
   technology stack.
+- [recommendations.md](recommendations.md) — recommended future features, grounded
+  in the current design.

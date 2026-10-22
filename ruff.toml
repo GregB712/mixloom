@@ -1,0 +1,12 @@
+# Lint config for the Python scripts and web backend.
+# Broad `except Exception` is a deliberate robustness pattern here (CLI tools and
+# the job runner keep going on any single failure), so BLE is not selected.
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]  # long lines are fine in SQL-heavy query builders
+
+[lint.isort]
+# The scripts and backend import each other by bare module name.
+known-first-party = ["config", "auth", "jobs", "db", "dbutil", "main", "feature_providers"]

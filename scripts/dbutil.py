@@ -30,8 +30,8 @@ _FLOAT_COLS = {
 }
 _TEXT_COLS = [
     "spotify_uri", "spotify_url", "isrc", "title", "artists_text", "album",
-    "album_name", "release_date", "itunes_track_id", "mbid", "found", "key",
-    "camelot", "open_key", "mood", "genre", "feature_source",
+    "album_name", "album_art_url", "release_date", "itunes_track_id", "mbid",
+    "found", "key", "camelot", "open_key", "mood", "genre", "feature_source",
 ]
 
 
@@ -193,6 +193,14 @@ def upsert_playlist(cur, spotify_id: str | None, name: str,
 
 def clear_playlist(cur, playlist_id: int) -> None:
     cur.execute("DELETE FROM playlist_tracks WHERE playlist_id = %s", (playlist_id,))
+
+
+def set_playlist_spotify_id(cur, playlist_id: int, spotify_playlist_id: str | None) -> None:
+    """Record (or clear) the Spotify id of the playlist a push created/updated."""
+    cur.execute(
+        "UPDATE playlists SET spotify_playlist_id = %s, updated_at = now() WHERE id = %s",
+        (spotify_playlist_id, playlist_id),
+    )
 
 
 def link_playlist_track(cur, playlist_id: int, track_id: int, position: int) -> None:

@@ -1,0 +1,10 @@
+# Minimal dependency set for CI: lint + backend tests only. Excludes the heavy
+# local-audio-analysis stack (librosa/numba) the test suite doesn't exercise.
+spotipy
+python-dotenv
+pycountry
+psycopg[binary]
+fastapi
+uvicorn
+pytest
+httpx

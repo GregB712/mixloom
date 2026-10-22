@@ -10,6 +10,7 @@ export type PlayerTrack = {
   artists: string;
   album: string;
   durationMs: number | null;
+  albumArt: string | null;
 };
 
 export type JobStatus = "pending" | "running" | "succeeded" | "failed";
@@ -31,6 +32,7 @@ export type Histogram = { bins: HistBin[] };
 export type PlaylistInfo = {
   id: number;
   spotifyId: string | null;
+  spotifyPlaylistId: string | null;
   name: string;
   curated: boolean;
   trackCount: number;
@@ -80,7 +82,29 @@ export type Track = {
   musicalKey: string | null;
   genre: string | null;
   mood: string | null;
+  albumArt: string | null;
   greek: boolean;
+  playlists?: string; // comma-joined; only set in duplicate groups
+};
+
+export type SimilarResult = { seedUri: string; hasFeatures: boolean; tracks: Track[] };
+export type DuplicateGroup = { isrc: string; tracks: Track[] };
+export type LibraryHealth = {
+  tracks: { total: number; withFeatures: number; withArt: number };
+  artists: { total: number; resolved: number };
+  featureSources: CountItem[];
+};
+
+export type SavedFilter = { id: number; name: string; rules: Record<string, unknown>; updatedAt?: string };
+
+export type ResyncTrack = { uri: string; title: string; artists: string };
+export type ResyncStatus = {
+  spotifyId: string;
+  inSync: boolean;
+  dbCount: number;
+  liveCount: number;
+  added: ResyncTrack[];
+  removed: ResyncTrack[];
 };
 
 export type CuratePool = {
@@ -120,6 +144,28 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+async function put<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+async function del<T>(url: string): Promise<T> {
+  const res = await fetch(url, { method: "DELETE" });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export const api = {
   status: () => get<{ env: EnvFlags }>("/api/status"),
   authStatus: () => get<AuthStatus>("/api/auth/status"),
@@ -136,8 +182,8 @@ export const api = {
     post<{ jobId: string }>("/api/jobs/enrich-features", { playlistIds }),
   analyzeLocal: (audioDir: string, playlistIds: number[]) =>
     post<{ jobId: string }>("/api/jobs/analyze-local", { audioDir, playlistIds }),
-  createPlaylist: (playlistId: number, name: string) =>
-    post<{ jobId: string }>("/api/jobs/create-playlist", { playlistId, name }),
+  createPlaylist: (playlistId: number, name: string, update = false) =>
+    post<{ jobId: string }>("/api/jobs/create-playlist", { playlistId, name, update }),
 
   curateTracks: (playlistIds: number[]) =>
     get<CuratePool>(`/api/curate/tracks${playlistIds.length ? `?playlistIds=${playlistIds.join(",")}` : ""}`),
@@ -151,6 +197,8 @@ export const api = {
 
   playlists: () => get<PlaylistInfo[]>("/api/playlists"),
   playlistTracks: (id: number) => get<PlayerTrack[]>(`/api/playlists/${id}/tracks`),
+  updatePlaylistTracks: (id: number, uris: string[]) =>
+    put<{ playlistId: number; count: number }>(`/api/playlists/${id}/tracks`, { uris }),
   stats: (playlistId: number | null) =>
     get<FileStats>(`/api/stats${playlistId != null ? `?playlistId=${playlistId}` : ""}`),
   rows: (playlistId: number | null, offset: number, limit: number, q: string) =>
@@ -158,4 +206,15 @@ export const api = {
       `/api/rows?offset=${offset}&limit=${limit}&q=${encodeURIComponent(q)}` +
         (playlistId != null ? `&playlistId=${playlistId}` : ""),
     ),
+
+  similar: (uri: string, limit = 20) =>
+    get<SimilarResult>(`/api/tracks/similar?uri=${encodeURIComponent(uri)}&limit=${limit}`),
+  duplicates: () => get<DuplicateGroup[]>("/api/duplicates"),
+  libraryHealth: () => get<LibraryHealth>("/api/library-health"),
+  resyncStatus: (playlistId: number) => get<ResyncStatus>(`/api/playlists/${playlistId}/resync`),
+
+  savedFilters: () => get<SavedFilter[]>("/api/saved-filters"),
+  saveFilter: (name: string, rules: Record<string, unknown>) =>
+    post<SavedFilter>("/api/saved-filters", { name, rules }),
+  deleteFilter: (id: number) => del<{ deleted: number }>(`/api/saved-filters/${id}`),
 };

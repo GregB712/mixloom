@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Create a new private Spotify playlist from a playlist stored in the database.
+"""Create or update a private Spotify playlist from a playlist in the database.
 
-Reads the track URIs of a DB playlist (in order) and adds them to a freshly
-created private playlist. Requires the SPOTIPY_* variables in .env.
+Reads the track URIs of a DB playlist (in order). By default it creates a fresh
+private playlist and records its Spotify id on the DB row. With --update, if the
+DB row already has a recorded Spotify playlist id, it replaces that playlist's
+tracks in place (no new playlist), falling back to creating one if the stored
+playlist is gone. Requires the SPOTIPY_* variables in .env.
 
 Usage:
-    python create_spotify_playlist.py <playlist_db_id> [new playlist name]
+    python create_spotify_playlist.py <playlist_db_id> [new playlist name] [--update]
 """
 
 import os
@@ -27,13 +30,15 @@ SCOPE = "playlist-modify-private"
 BATCH_SIZE = 100
 
 
-def read_playlist(playlist_id: int) -> tuple[str, list[str]]:
-    """Return (playlist name, ordered track URIs) for a DB playlist."""
+def read_playlist(playlist_id: int) -> tuple[str, list[str], str | None]:
+    """Return (name, ordered track URIs, recorded Spotify playlist id) for a DB playlist."""
     with dbutil.connect() as conn:
-        row = conn.execute("SELECT name FROM playlists WHERE id = %s", (playlist_id,)).fetchone()
+        row = conn.execute(
+            "SELECT name, spotify_playlist_id FROM playlists WHERE id = %s", (playlist_id,)
+        ).fetchone()
         if not row:
             raise SystemExit(f"Playlist id {playlist_id} not found in the database.")
-        name = row[0]
+        name, spotify_playlist_id = row
         uris = [
             r[0] for r in conn.execute(
                 """SELECT t.spotify_uri FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
@@ -44,7 +49,25 @@ def read_playlist(playlist_id: int) -> tuple[str, list[str]]:
         ]
     if not uris:
         raise SystemExit("That playlist has no Spotify track URIs to add.")
-    return name, uris
+    return name, uris, spotify_playlist_id
+
+
+def store_spotify_id(playlist_id: int, spotify_playlist_id: str | None) -> None:
+    with dbutil.connect() as conn:
+        with conn.cursor() as cur:
+            dbutil.set_playlist_spotify_id(cur, playlist_id, spotify_playlist_id)
+        conn.commit()
+
+
+def replace_tracks(spotify: spotipy.Spotify, sp_playlist_id: str, uris: list[str]) -> int:
+    """Replace a playlist's items with `uris` (first 100 replace, rest appended)."""
+    spotify.playlist_replace_items(sp_playlist_id, uris[:BATCH_SIZE])
+    added = min(len(uris), BATCH_SIZE)
+    for start in range(BATCH_SIZE, len(uris), BATCH_SIZE):
+        batch = uris[start:start + BATCH_SIZE]
+        spotify.playlist_add_items(sp_playlist_id, batch)
+        added += len(batch)
+    return added
 
 
 def main():
@@ -57,27 +80,35 @@ def main():
     except ImportError:
         raise SystemExit("Missing driver. Install with:  pip install 'psycopg[binary]'")
 
-    if len(sys.argv) >= 2:
+    args = [a for a in sys.argv[1:] if a != "--update"]
+    update = "--update" in sys.argv[1:]
+
+    if args:
         try:
-            playlist_id = int(sys.argv[1])
+            playlist_id = int(args[0])
         except ValueError:
             raise SystemExit("First argument must be the playlist's database id.")
     else:
         playlist_id = int(input("Playlist database id: ").strip())
 
-    source_name, uris = read_playlist(playlist_id)
-    playlist_name = " ".join(sys.argv[2:]).strip() if len(sys.argv) >= 3 else source_name
+    source_name, uris, existing_sp_id = read_playlist(playlist_id)
+    playlist_name = " ".join(args[1:]).strip() if len(args) >= 2 else source_name
     if not playlist_name:
         raise SystemExit("Playlist name cannot be empty.")
 
+    will_update = update and bool(existing_sp_id)
     print(f"\nSource playlist (db id {playlist_id}): {source_name}")
     print(f"Tracks to add: {len(uris)}")
-    print(f"New playlist name: {playlist_name}")
-    print("Visibility: Private")
+    print(f"Playlist name: {playlist_name}")
+    if will_update:
+        print(f"Mode: update existing Spotify playlist ({existing_sp_id}) in place")
+    else:
+        print("Mode: create new private playlist")
 
-    confirmation = input("\nCreate this playlist on Spotify? [y/N]: ").strip().lower()
+    verb = "Update" if will_update else "Create"
+    confirmation = input(f"\n{verb} this playlist on Spotify? [y/N]: ").strip().lower()
     if confirmation != "y":
-        print("Cancelled. No playlist was created.")
+        print("Cancelled. No changes were made on Spotify.")
         return
 
     auth_manager = SpotifyOAuth(
@@ -90,20 +121,36 @@ def main():
     )
     spotify = spotipy.Spotify(auth_manager=auth_manager)
 
-    playlist = None
-    added = 0
     try:
+        if will_update:
+            try:
+                added = replace_tracks(spotify, existing_sp_id, uris)
+                url = f"https://open.spotify.com/playlist/{existing_sp_id}"
+                print("\nPlaylist updated successfully.")
+                print(f"Tracks now in playlist: {added}")
+                print(f"Spotify URL: {url}")
+                return
+            except SpotifyException as exc:
+                if exc.http_status == 404:
+                    print("Stored Spotify playlist no longer exists; creating a new one.")
+                    store_spotify_id(playlist_id, None)
+                else:
+                    raise
+
         playlist = spotify.current_user_playlist_create(
             name=playlist_name, public=False,
             description="Created from the metadata database.",
         )
         playlist_id_sp = playlist["id"]
+        added = 0
         for start in range(0, len(uris), BATCH_SIZE):
             batch = uris[start:start + BATCH_SIZE]
             spotify.playlist_add_items(playlist_id_sp, batch)
             added += len(batch)
             print(f"Added {added}/{len(uris)} tracks")
 
+        # Record the new Spotify id so a later push can update it in place.
+        store_spotify_id(playlist_id, playlist_id_sp)
         url = (playlist.get("external_urls") or {}).get("spotify", "")
         print("\nPlaylist created successfully.")
         print(f"Name: {playlist_name}")
@@ -111,8 +158,6 @@ def main():
         print(f"Spotify URL: {url}")
     except SpotifyException as exc:
         print(f"\nSpotify API error: HTTP {exc.http_status} - {exc.msg}")
-        if playlist and added < len(uris):
-            print(f"Playlist may be incomplete: {added} of {len(uris)} tracks added.")
         raise SystemExit(1) from exc
 
 
