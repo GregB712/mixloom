@@ -1,4 +1,4 @@
-# Spotify Playlist Tools
+# Mixloom
 
 Build and understand Spotify playlists from richer metadata than Spotify exposes
 in its own app. Export your playlists into a local **Postgres** database, enrich
@@ -25,22 +25,30 @@ token caches, so you can mix and match freely.
 scripts/                       CLI tools (each runnable on its own)
   spotify_playlist_export.py     export selected playlists -> Postgres (no merge)
   enrich_artist_countries.py     add artist country via MusicBrainz -> DB
-  enrich_spotify_csv.py          add audio features via FreqBlog -> DB
+  enrich_spotify_csv.py          add audio features/tags via a provider -> DB
+  feature_providers.py           pluggable enrichment providers (FreqBlog, Last.fm)
   analyze_local_audio.py         estimate features from local audio files -> DB
-  create_spotify_playlist.py     create a private Spotify playlist from a DB playlist
+  create_spotify_playlist.py     create or update a Spotify playlist from a DB playlist
   import_manual.py               import hand-filled metadata JSON -> DB
   db_init.py                     create the DB and apply the schema (idempotent)
+  db_migrate.py                  apply schema + pending migrations (idempotent)
   db_import.py                   seed the DB from an existing exported CSV
   dbutil.py                      shared DB helpers (connection, upserts, coercion)
 db/
   schema.sql                     table definitions (tracks, artists, playlists, links)
+  migrations/                    incremental schema changes applied by db_migrate.py
   docker-compose.yml             local Postgres 16 (auto-applies schema on first boot)
 web/
   backend/                       FastAPI app: wraps the scripts, serves DB data
-  frontend/                      React + TypeScript + Vite UI
+  backend/tests/                 pytest suite (query helpers + API smoke tests)
+  frontend/                      React + TypeScript + Vite UI (Vitest unit tests)
   dev.sh                         start backend + frontend together (+ DB check)
+docker-compose.yml             one-command stack: db + backend + frontend
+.github/workflows/ci.yml       CI: typecheck, build, lint, tests
 docs/                           overview and architecture documentation
 requirements.txt               Python deps for scripts + backend (one venv)
+requirements-ci.txt            lean dependency set for CI (lint + tests)
+ruff.toml / pytest.ini         lint and test configuration
 .env / .env.example            credentials + DATABASE_URL (real .env is git-ignored)
 ```
 
@@ -127,6 +135,18 @@ tables once with:
 python scripts/db_init.py
 ```
 
+**Applying migrations.** Schema changes after the initial release live in
+`db/migrations/` and are applied with the lightweight runner:
+
+```bash
+python scripts/db_migrate.py
+```
+
+It ensures the baseline schema and then applies any pending migration, recording
+each in a `schema_migrations` table (safe to run repeatedly). Run it after
+pulling changes that add columns. The Docker backend (section 3.4) runs it
+automatically on boot.
+
 ## 3. Use the web app
 
 The web app runs the pipeline steps as background jobs with live-streaming logs,
@@ -180,20 +200,58 @@ The frontend proxies `/api` to the backend, so you only open the frontend URL.
   with a filter per metadata field (genre, mood, Camelot key, Greek, album text,
   and BPM/energy/valence/danceability/acousticness/duration ranges) or
   **auto-group by vibe** (energy × mood quadrants, tempo bands, Partying
-  Greek/non-Greek, FreqBlog mood, or genre). Order the selection for smooth
-  DJ-style transitions (greedy Camelot + BPM + energy), a plain BPM/energy ramp,
-  or by hand with drag-and-drop — with per-track key/BPM/energy chips and a
-  mix-quality dot between tracks. Save to the DB, and with write access create the
-  private Spotify playlist in that exact order.
+  Greek/non-Greek, FreqBlog mood, or genre). **Save a filter set** ("smart
+  playlists") and re-apply it in one click. Order the selection for smooth
+  DJ-style transitions (greedy Camelot + BPM + energy), an **energy curve**
+  (warm-up → peak → cool-down), a plain BPM/energy ramp, or by hand with
+  drag-and-drop — with per-track album art, key/BPM/energy chips, and a
+  mix-quality dot between tracks. **Undo** the last edit, or use **✨ More like
+  this** to pull in nearest-neighbour tracks by audio-feature similarity. **Play
+  the built playlist** straight from the "Your playlist" panel. Save to the DB,
+  and with write access create the private Spotify playlist in that exact order.
+  You can also **open an existing curated playlist** back into the builder and
+  save changes in place (updating its Spotify copy if it has one).
 - **Dashboard** — pick one playlist or the whole library and view metrics (tracks,
   unique artists, albums, duration, % Greek, median BPM), top artists, tracks per
   source playlist, country/Greek/lookup-status breakdowns, audio-feature
-  histograms and category charts, and a searchable paginated table. Sections
-  appear only for the metadata the selection actually has.
+  histograms and category charts, a **Camelot wheel** of harmonic key distribution,
+  and (whole-library) a **library-health** panel (feature / album-art / country
+  coverage meters and feature-source breakdown) plus **cross-library duplicate
+  detection** (same recording under different URIs, grouped by ISRC). A searchable
+  paginated table rounds it out. Sections appear only for the metadata present.
 - **Player** — connect Spotify (player scope, **Premium required**) and play your
-  DB playlists — both exported and ones you curated — in the browser. Per-track
-  and "play all" buttons, a now-playing bar (prev / play-pause / next), and
-  playback that keeps going while you switch tabs.
+  DB playlists — both exported and ones you curated — in the browser, with album
+  art in every row. Per-track and "play all" buttons, and playback that keeps going
+  while you switch tabs. For **curated (database-only) playlists** you can **edit
+  them in place** — remove tracks, **drag to reorder**, and **undo** — then save
+  back to the database and **push to Spotify** (write access), either as a new
+  playlist or **updating the existing Spotify playlist in place**. For **exported**
+  playlists you can **check for drift** against Spotify (tracks added/removed since
+  export) and **re-import** to reconcile.
+
+Playback is controlled from a **now-playing panel available on every tab**: a small
+floating chip (bottom-left) that expands on hover or focus to show album art, the
+current track, shuffle / prev / play-pause / next / repeat, a **seekable progress
+bar**, a **volume slider with mute**, an **"up next"** queue, and a **device
+picker** to transfer playback to a phone or speaker. Long playlists play all the
+way through (the queue extends automatically past the first 100 tracks).
+**Keyboard shortcuts** work anywhere outside a text field: Space = play/pause,
+←/→ = seek, ↑/↓ = volume.
+
+### 3.4 Run the whole stack in Docker (optional)
+
+Instead of a venv + npm, bring up Postgres, the backend, and the frontend with
+one command from the repo root:
+
+```bash
+docker compose up --build
+```
+
+Then open `http://localhost:5173` (backend on `http://localhost:8888`). It reads
+Spotify credentials from `.env`, points the backend at the `db` service, and
+applies migrations on boot. Keep `SPOTIPY_REDIRECT_URI` as
+`http://127.0.0.1:8888/callback` so the published backend port handles the OAuth
+callback. Stop with `Ctrl+C`; data persists in the `mixloom_data` volume.
 
 ## 4. Use the CLI scripts
 
@@ -211,9 +269,10 @@ python scripts/enrich_artist_countries.py
 python scripts/enrich_artist_countries.py --playlists 1,2,3
 python scripts/enrich_artist_countries.py --all      # re-resolve everything
 
-# Enrich audio features from FreqBlog (feature-less tracks only, by default)
-python scripts/enrich_spotify_csv.py
+# Enrich audio features (feature-less tracks only, by default) via a provider
+python scripts/enrich_spotify_csv.py                          # FreqBlog (default)
 python scripts/enrich_spotify_csv.py --playlists 1,2,3
+python scripts/enrich_spotify_csv.py --provider lastfm        # genre/mood tags (needs LASTFM_API_KEY)
 
 # Estimate features from local audio files (for tracks the APIs couldn't fill)
 python scripts/analyze_local_audio.py /path/to/audio --playlists 1,2,3
@@ -221,6 +280,7 @@ python scripts/analyze_local_audio.py /path/to/audio --seconds 0   # whole file
 
 # Create a private Spotify playlist from a DB playlist (by its DB id)
 python scripts/create_spotify_playlist.py 5 "My New Playlist"
+python scripts/create_spotify_playlist.py 5 --update   # update the playlist it created before, in place
 
 # Import hand-filled metadata JSON (type auto-detected) back into the DB
 python scripts/import_manual.py artists_missing_country.json
@@ -235,21 +295,44 @@ libraries take minutes the first time and are fast afterward.
 To migrate data from an older CSV export into the DB, use `scripts/db_import.py`
 (see its `--help`).
 
-## 5. Data model
+## 5. Tests and CI
+
+The pure curation logic and the backend query helpers are covered by tests.
+
+```bash
+# Frontend unit tests (Vitest) — Camelot/transition/ordering/vibe logic
+cd web/frontend && npm test
+
+# Backend tests (pytest) — DB query helpers + API smoke tests
+#   needs a reachable Postgres; it creates and drops an isolated "mixloom_test"
+#   database, so your real data is never touched. Skips if no server is up.
+.venv/bin/python -m pip install pytest httpx   # once
+pytest
+```
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and PR:
+the frontend job type-checks (`tsc --noEmit`), builds, and runs Vitest; the
+backend job lints with `ruff`, applies migrations against a throwaway Postgres
+service, and runs pytest. Lint config is in `ruff.toml`.
+
+## 6. Data model
 
 All metadata lives in Postgres. See [`docs/architecture.md`](docs/architecture.md)
 for the full schema; in short:
 
 - **`tracks`** — one row per track (deduplicated by `spotify_uri`), with base
-  fields and all audio-feature columns; `feature_source` records where the
-  features came from (`freqblog`, `local-estimate`, or `manual`).
+  fields, `album_art_url`, and all audio-feature columns; `feature_source` records
+  where the features came from (`freqblog`, `lastfm`, `local-estimate`, or `manual`).
 - **`artists`** — one row per artist (unique name) with `country_code` /
   `country_name` / `country_status`.
 - **`playlists`** — exported playlists (`spotify_id` set) and in-app curated ones
-  (`curated = TRUE`); tracks are kept distinct, never merged.
+  (`curated = TRUE`); `spotify_playlist_id` holds the id of the Spotify playlist a
+  push created, so a later push can update it in place. Tracks are kept distinct.
 - **`track_artists`** and **`playlist_tracks`** — ordered many-to-many links.
+- **`saved_filters`** — persisted Curate filter rules ("smart playlists").
+- **`schema_migrations`** — applied migration versions (managed by `db_migrate.py`).
 
-## 6. Data and privacy
+## 7. Data and privacy
 
 Secrets never reach the browser; the backend holds all tokens. Only
 `create_spotify_playlist.py` (and the Player's playback control) writes to your
@@ -267,7 +350,7 @@ musicbrainz_artist_cache.json
 
 The Postgres data lives in a Docker volume (`spotify_meta_data`), not in the repo.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 - **"Missing .env variables"** — a required key is unset; see section 2.2.
 - **Backend errors / "Loading…" never finishes** — the database isn't reachable.

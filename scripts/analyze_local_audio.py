@@ -135,8 +135,8 @@ def detect_key(chroma_mean) -> tuple[int, bool]:
 
 
 def analyze(path: Path, seconds: int) -> dict | None:
-    import numpy as np
     import librosa
+    import numpy as np
 
     try:
         duration = seconds if seconds and seconds > 0 else None
@@ -220,8 +220,8 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        import numpy  # noqa: F401
         import librosa  # noqa: F401
+        import numpy  # noqa: F401
     except ImportError as exc:
         raise SystemExit(
             f"Missing audio library: {exc.name}. Install with:\n"

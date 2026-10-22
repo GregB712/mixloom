@@ -15,11 +15,11 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 import db
-from auth import access_token, auth_status, authorize_url, exchange_code, _oauth
+from auth import _oauth, access_token, auth_status, authorize_url, exchange_code
 from config import CALLBACK_PATH, FRONTEND_URL, env_flags
 from jobs import registry
 
-app = FastAPI(title="Spotify Playlist Tools API")
+app = FastAPI(title="Mixloom API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -120,6 +120,7 @@ class AnalyzeBody(BaseModel):
 class CreateBody(BaseModel):
     playlistId: int
     name: str = ""
+    update: bool = False  # update the existing Spotify playlist in place
 
 
 def _scope_args(playlist_ids: list[int]) -> list[str]:
@@ -163,6 +164,8 @@ def job_create_playlist(body: CreateBody):
     args = [str(body.playlistId)]
     if body.name.strip():
         args.append(body.name.strip())
+    if body.update:
+        args.append("--update")
     # The script prompts "[y/N]"; feed "y" so it proceeds.
     job = registry.start("create-playlist", args, stdin_text="y\n")
     return {"jobId": job.id}
@@ -248,6 +251,70 @@ def playlist_tracks_endpoint(playlist_id: int):
     return result
 
 
+class PlaylistTracksBody(BaseModel):
+    uris: list[str]
+
+
+@app.put("/api/playlists/{playlist_id}/tracks")
+def update_playlist_tracks_endpoint(playlist_id: int, body: PlaylistTracksBody):
+    if not body.uris:
+        raise HTTPException(400, "A playlist needs at least one track.")
+    result = db.update_playlist_tracks(playlist_id, body.uris)
+    if result is None:
+        raise HTTPException(404, "Playlist not found, or not an editable (curated) playlist.")
+    return result
+
+
+def _live_playlist_uris(spotify_id: str) -> list[str]:
+    """Fetch the current track URIs of a Spotify playlist (read scope)."""
+    sp = spotipy.Spotify(auth_manager=_oauth("read"))
+    uris: list[str] = []
+    page = sp.playlist_items(spotify_id, limit=50, additional_types=("track",))
+    while page:
+        for entry in page.get("items", []):
+            track = entry.get("track") or entry.get("item") or {}
+            uri = track.get("uri") or ""
+            if uri.startswith("spotify:track:"):
+                uris.append(uri)
+        page = sp.next(page) if page.get("next") else None
+    return uris
+
+
+@app.get("/api/playlists/{playlist_id}/resync")
+def playlist_resync_status(playlist_id: int):
+    """Diff an exported playlist's DB mirror against its live Spotify contents,
+    so drift (tracks added/removed on Spotify since export) is visible."""
+    mirror = db.playlist_mirror(playlist_id)
+    if mirror is None:
+        raise HTTPException(404, "Playlist not found.")
+    if not mirror["spotifyId"]:
+        raise HTTPException(400, "This playlist has no Spotify source (it was curated in-app).")
+    if not auth_status()["read"]:
+        raise HTTPException(401, "Connect Spotify (read scope) first.")
+    try:
+        live = _live_playlist_uris(mirror["spotifyId"])
+    except spotipy.SpotifyException as exc:
+        raise HTTPException(502, f"Spotify error: HTTP {exc.http_status} - {exc.msg}")
+
+    db_set, live_set = set(mirror["uris"]), set(live)
+    added_uris = [u for u in live if u not in db_set]      # on Spotify, not in DB
+    removed_uris = [u for u in mirror["uris"] if u not in live_set]  # in DB, not on Spotify
+    known = db.tracks_by_uri(added_uris + removed_uris)
+
+    def label(uri: str) -> dict:
+        t = known.get(uri, {})
+        return {"uri": uri, "title": t.get("title", ""), "artists": t.get("artists", "")}
+
+    return {
+        "spotifyId": mirror["spotifyId"],
+        "inSync": not added_uris and not removed_uris,
+        "dbCount": len(mirror["uris"]),
+        "liveCount": len(live),
+        "added": [label(u) for u in added_uris],
+        "removed": [label(u) for u in removed_uris],
+    }
+
+
 @app.get("/api/stats")
 def stats_endpoint(playlistId: int | None = Query(None)):
     result = db.stats(playlistId)
@@ -293,3 +360,51 @@ def curate_save(body: CurateSaveBody):
     if result is None:
         raise HTTPException(404, "None of the selected tracks are in the database.")
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Library intelligence
+# --------------------------------------------------------------------------- #
+@app.get("/api/tracks/similar")
+def tracks_similar(uri: str = Query(...), limit: int = Query(20, ge=1, le=100)):
+    result = db.find_similar(uri, limit)
+    if result is None:
+        raise HTTPException(404, "Track not found in the database.")
+    return result
+
+
+@app.get("/api/duplicates")
+def duplicates_endpoint():
+    return db.duplicates()
+
+
+@app.get("/api/library-health")
+def library_health_endpoint():
+    return db.library_health()
+
+
+# --------------------------------------------------------------------------- #
+# Saved filters (smart playlists)
+# --------------------------------------------------------------------------- #
+class SavedFilterBody(BaseModel):
+    name: str
+    rules: dict
+
+
+@app.get("/api/saved-filters")
+def saved_filters_list():
+    return db.list_saved_filters()
+
+
+@app.post("/api/saved-filters")
+def saved_filters_create(body: SavedFilterBody):
+    if not body.name.strip():
+        raise HTTPException(400, "Filter name is required.")
+    return db.save_filter(body.name.strip(), body.rules)
+
+
+@app.delete("/api/saved-filters/{filter_id}")
+def saved_filters_delete(filter_id: int):
+    if not db.delete_filter(filter_id):
+        raise HTTPException(404, "Saved filter not found.")
+    return {"deleted": filter_id}

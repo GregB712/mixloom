@@ -18,3 +18,7 @@ psycopg[binary]
 fastapi
 uvicorn
 pandas
+
+# Tests (web/backend/tests). httpx backs FastAPI's TestClient.
+pytest
+httpx

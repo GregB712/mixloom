@@ -1,0 +1,59 @@
+# One-command local stack: Postgres + FastAPI backend + Vite frontend.
+#   docker compose up --build
+# Then open http://localhost:5173 (backend on http://localhost:8888).
+#
+# Spotify credentials are read from .env (SPOTIPY_CLIENT_ID/SECRET/REDIRECT_URI,
+# FREQBLOG_API_KEY, CONTACT_EMAIL). Keep SPOTIPY_REDIRECT_URI pointing at
+# http://127.0.0.1:8888/callback so the published backend port handles the OAuth
+# callback.
+services:
+  db:
+    image: postgres:16
+    container_name: mixloom_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spotify
+      POSTGRES_PASSWORD: spotify
+      POSTGRES_DB: spotify_meta
+    ports:
+      - "5432:5432"
+    volumes:
+      - mixloom_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spotify -d spotify_meta"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: web/backend/Dockerfile
+    container_name: mixloom_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://spotify:spotify@db:5432/spotify_meta
+      FRONTEND_URL: http://localhost:5173
+    ports:
+      - "8888:8888"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: web/frontend
+      dockerfile: Dockerfile
+    container_name: mixloom_frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_PROXY: http://backend:8888
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  mixloom_data:

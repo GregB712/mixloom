@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, type FileStats, type PlaylistInfo } from "../api/client";
+import { api, type FileStats, type LibraryHealth, type PlaylistInfo } from "../api/client";
 import { BarList } from "../components/charts/BarList";
+import { CamelotWheel } from "../components/charts/CamelotWheel";
 import { HistogramChart } from "../components/charts/HistogramChart";
 import { Card, CardBody } from "../components/ui/Card";
 import { ChartCard } from "../components/ui/ChartCard";
@@ -9,6 +10,7 @@ import { DataTable } from "../components/ui/DataTable";
 import { Callout, EmptyState } from "../components/ui/EmptyState";
 import { Select } from "../components/ui/Select";
 import { MetricTile } from "../components/ui/Stat";
+import { TrackArt } from "../components/ui/TrackArt";
 import { Badge } from "../components/ui/Badge";
 import { chartColor, formatDuration, formatNumber } from "../lib/format";
 
@@ -151,9 +153,108 @@ function StatsView({ data, playlistId }: { data: FileStats; playlistId: number |
 
       {data.audio && <AudioSection audio={data.audio} />}
 
+      {playlistId === null && (
+        <>
+          <LibraryHealthSection />
+          <DuplicatesSection />
+        </>
+      )}
+
       <h2 className="section-title">Raw data</h2>
       <RawTable playlistId={playlistId} />
     </div>
+  );
+}
+
+function pct(part: number, total: number): number {
+  return total > 0 ? Math.round((part / total) * 100) : 0;
+}
+
+function CoverageMeter({ label, part, total, sub }: { label: string; part: number; total: number; sub?: string }) {
+  const p = pct(part, total);
+  return (
+    <div className="stack" style={{ gap: "var(--space-1)" }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <span className="small">{label}</span>
+        <span className="small faint">{part}/{total} · {p}%</span>
+      </div>
+      <div className="barrow__track"><div className="barrow__fill" style={{ width: `${p}%` }} /></div>
+      {sub && <span className="small faint">{sub}</span>}
+    </div>
+  );
+}
+
+// Coverage meters: % of tracks with features / album art, % of artists with a
+// resolved country, and the feature-source breakdown — the pipeline's
+// "missing / total" counts in one at-a-glance view.
+function LibraryHealthSection() {
+  const health = useQuery({ queryKey: ["libraryHealth"], queryFn: api.libraryHealth });
+  const h = health.data as LibraryHealth | undefined;
+  if (!h) return null;
+  return (
+    <>
+      <h2 className="section-title">Library health</h2>
+      <div className="grid cols-2">
+        <ChartCard title="Coverage">
+          <div className="stack" style={{ gap: "var(--space-4)" }}>
+            <CoverageMeter label="Tracks with audio features" part={h.tracks.withFeatures} total={h.tracks.total} />
+            <CoverageMeter label="Tracks with album art" part={h.tracks.withArt} total={h.tracks.total} />
+            <CoverageMeter label="Artists with resolved country" part={h.artists.resolved} total={h.artists.total} />
+          </div>
+        </ChartCard>
+        <ChartCard title="Feature source">
+          <BarList items={h.featureSources} max={10} />
+        </ChartCard>
+      </div>
+    </>
+  );
+}
+
+// Cross-library duplicate detection: tracks sharing an ISRC under different URIs.
+function DuplicatesSection() {
+  const dupes = useQuery({ queryKey: ["duplicates"], queryFn: api.duplicates });
+  const groups = dupes.data ?? [];
+  const [open, setOpen] = useState(false);
+  if (dupes.isLoading || groups.length === 0) return null;
+
+  const totalExtra = groups.reduce((n, g) => n + (g.tracks.length - 1), 0);
+  return (
+    <>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <h2 className="section-title">Duplicates</h2>
+        <button className="badge" style={{ cursor: "pointer" }} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          {open ? "Hide" : "Show"} {groups.length} group{groups.length === 1 ? "" : "s"}
+        </button>
+      </div>
+      <Card>
+        <CardBody>
+          <p className="small muted">
+            {groups.length} recording{groups.length === 1 ? "" : "s"} appear under more than one Spotify URI
+            ({totalExtra} extra cop{totalExtra === 1 ? "y" : "ies"}), grouped by ISRC.
+          </p>
+          {open && (
+            <div className="stack" style={{ gap: "var(--space-4)" }}>
+              {groups.map((g) => (
+                <div key={g.isrc} className="stack" style={{ gap: "var(--space-1)" }}>
+                  <span className="small faint">ISRC {g.isrc}</span>
+                  {g.tracks.map((t) => (
+                    <div className="row" key={t.uri} style={{ gap: "var(--space-2)" }}>
+                      <TrackArt url={t.albumArt} size={28} />
+                      <span className="option__name">
+                        <strong>{t.title || "(untitled)"}</strong>
+                        <span className="muted"> — {t.artists}</span>
+                        {t.album ? <span className="faint small"> · {t.album}</span> : null}
+                      </span>
+                      {t.playlists && <span className="small faint">in: {t.playlists}</span>}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardBody>
+      </Card>
+    </>
   );
 }
 
@@ -205,6 +306,12 @@ function AudioSection({ audio }: { audio: NonNullable<FileStats["audio"]> }) {
             ))}
           </div>
         </>
+      )}
+
+      {audio.categories?.camelot && (
+        <ChartCard title="Camelot wheel (harmonic compatibility)">
+          <CamelotWheel items={audio.categories.camelot} />
+        </ChartCard>
       )}
 
       {audio.categories && (

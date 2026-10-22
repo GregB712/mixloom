@@ -1,0 +1,9 @@
+.git
+.venv
+web/frontend/node_modules
+web/frontend/dist
+**/__pycache__
+*.pyc
+.spotify*token_cache
+.spotify_player_token_cache
+musicbrainz_artist_cache.json

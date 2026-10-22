@@ -88,12 +88,33 @@ export function smoothOrder(tracks: Track[]): Track[] {
   return result;
 }
 
-export type SortStrategy = "smooth" | "bpm" | "energy" | "manual";
+// Order toward an energy "mountain": a warm-up that rises to a mid-set peak,
+// then a cool-down. Tracks are sorted by energy, then placed from the outer
+// ends inward so the lowest-energy tracks bookend the set and the highest sits
+// in the middle. Tracks without an energy value trail at the end.
+export function energyCurveOrder(tracks: Track[]): Track[] {
+  const withE = tracks.filter((t) => t.energy !== null);
+  const without = tracks.filter((t) => t.energy === null);
+  const sorted = orderByNumber(withE, (t) => t.energy);
+  const n = sorted.length;
+  const result = new Array<Track>(n);
+  let lo = 0;
+  let hi = n - 1;
+  for (let i = 0; i < n; i++) {
+    if (i % 2 === 0) result[lo++] = sorted[i];
+    else result[hi--] = sorted[i];
+  }
+  return [...result, ...without];
+}
+
+export type SortStrategy = "smooth" | "curve" | "bpm" | "energy" | "manual";
 
 export function applySort(tracks: Track[], strategy: SortStrategy): Track[] {
   switch (strategy) {
     case "smooth":
       return smoothOrder(tracks);
+    case "curve":
+      return energyCurveOrder(tracks);
     case "bpm":
       return orderByNumber(tracks, (t) => t.bpm);
     case "energy":

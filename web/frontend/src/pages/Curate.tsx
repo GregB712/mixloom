@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AuthStatus, type EnvFlags, type PlaylistInfo, type Track } from "../api/client";
+import { api, type AuthStatus, type EnvFlags, type PlaylistInfo, type SavedFilter, type Track } from "../api/client";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
@@ -9,8 +9,10 @@ import { LogPanel } from "../components/ui/LogPanel";
 import { MultiSelect } from "../components/ui/MultiSelect";
 import { Select } from "../components/ui/Select";
 import { Tabs } from "../components/ui/Tabs";
+import { TrackArt } from "../components/ui/TrackArt";
 import { useToast } from "../components/ui/Toast";
 import { useJobStream } from "../hooks/useJobStream";
+import { usePlayback } from "../hooks/usePlayback";
 import { formatDuration } from "../lib/format";
 import {
   applySort,
@@ -24,6 +26,7 @@ import {
 
 const SORT_OPTIONS = [
   { value: "smooth", label: "Smooth transitions (key + tempo + energy)" },
+  { value: "curve", label: "Energy curve (warm-up → peak → cool-down)" },
   { value: "bpm", label: "BPM ascending" },
   { value: "energy", label: "Energy ascending" },
   { value: "manual", label: "Selection order" },
@@ -74,9 +77,38 @@ function CurateBody({
   const pool = useQuery({ queryKey: ["curate", sourceKey], queryFn: () => api.curateTracks(playlistIds) });
   const [selected, setSelected] = useState<string[]>([]);
   const [strategy, setStrategy] = useState<SortStrategy>("smooth");
+  // Undo history of the working selection (each edit snapshots the prior list).
+  const [history, setHistory] = useState<string[][]>([]);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const pushHistory = () => setHistory((h) => [...h, selectedRef.current]);
+  const undo = () =>
+    setHistory((h) => {
+      if (h.length === 0) return h;
+      setSelected(h[h.length - 1]);
+      return h.slice(0, -1);
+    });
 
-  // Reset the working set when the source changes.
-  useEffect(() => setSelected([]), [sourceKey]);
+  // When set, the builder is editing an existing curated playlist in place
+  // (save writes back to it) rather than creating a brand-new one.
+  const [editing, setEditing] = useState<{ id: number; name: string } | null>(null);
+  const skipReset = useRef(false);
+
+  // Reset the working set when the source changes (unless we just loaded an
+  // existing curated playlist, which deliberately sets the source).
+  useEffect(() => {
+    if (skipReset.current) { skipReset.current = false; return; }
+    setSelected([]); setHistory([]); setEditing(null);
+  }, [sourceKey]);
+
+  // Load a curated playlist's tracks into the builder to edit and save back.
+  const openCurated = async (pl: PlaylistInfo) => {
+    const tracks = await api.playlistTracks(pl.id);
+    if (source.length) { skipReset.current = true; onSource([]); } // whole library resolves its tracks
+    setSelected(tracks.map((t) => t.uri));
+    setHistory([]);
+    setEditing({ id: pl.id, name: pl.name });
+  };
 
   // With several playlists combined, the same song can appear under different
   // Spotify URIs (single vs. album version). Collapse those by title + artist,
@@ -102,6 +134,7 @@ function CurateBody({
   );
 
   const addUris = (uris: string[], replace = false) => {
+    pushHistory();
     setSelected((prev) => {
       const base = replace ? [] : prev;
       const seen = new Set(base);
@@ -111,17 +144,21 @@ function CurateBody({
     });
   };
   const removeUris = (uris: string[]) => {
+    pushHistory();
     const drop = new Set(uris);
     setSelected((prev) => prev.filter((u) => !drop.has(u)));
   };
   const reorder = (s: SortStrategy) => {
+    pushHistory();
     setStrategy(s);
     setSelected(applySort(selectedTracks, s).map((t) => t.uri));
   };
   // Hand reorder via drag-and-drop; the order becomes the manual selection order.
   const moveTrack = (from: number, to: number) => {
+    if (from === to) return;
+    pushHistory();
     setSelected((prev) => {
-      if (from === to || from < 0 || to < 0 || from >= prev.length || to >= prev.length) return prev;
+      if (from < 0 || to < 0 || from >= prev.length || to >= prev.length) return prev;
       const next = [...prev];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
@@ -129,6 +166,7 @@ function CurateBody({
     });
     setStrategy("manual");
   };
+  const clearSelection = () => { pushHistory(); setSelected([]); };
 
   return (
     <div className="stack">
@@ -162,6 +200,26 @@ function CurateBody({
               smooth-transition sorting need the audio-feature enrichment step.
             </Callout>
           )}
+          {playlists.some((p) => p.curated) && (
+            <div className="row" style={{ gap: "var(--space-2)", alignItems: "center" }}>
+              <span className="small faint">Edit an existing curated playlist:</span>
+              {playlists.filter((p) => p.curated).map((p) => (
+                <Button
+                  key={p.id}
+                  variant={editing?.id === p.id ? "secondary" : "ghost"}
+                  size="sm"
+                  onClick={() => openCurated(p)}
+                >
+                  ★ {p.name}
+                </Button>
+              ))}
+            </div>
+          )}
+          {editing && (
+            <Callout tone="ok">
+              Editing <code>{editing.name}</code> in place — saving writes changes back to it.
+            </Callout>
+          )}
         </CardBody>
       </Card>
 
@@ -170,15 +228,27 @@ function CurateBody({
         <>
           <BuildCard pool={tracks} hasFeatures={pool.data.hasFeatures} selected={selected} addUris={addUris} removeUris={removeUris} />
           <PlaylistCard
+            env={env}
+            auth={auth}
             selectedTracks={selectedTracks}
             strategy={strategy}
+            canUndo={history.length > 0}
+            onUndo={undo}
             onStrategy={reorder}
             onReapply={() => reorder(strategy)}
             onRemove={(u) => removeUris([u])}
-            onClear={() => setSelected([])}
+            onClear={clearSelection}
             onMove={moveTrack}
+            onAdd={addUris}
           />
-          <CreateCard env={env} auth={auth} selected={selected} selectedTracks={selectedTracks} />
+          <CreateCard
+            env={env}
+            auth={auth}
+            selected={selected}
+            selectedTracks={selectedTracks}
+            editing={editing}
+            playlists={playlists}
+          />
         </>
       )}
     </div>
@@ -253,6 +323,8 @@ function ManualPicker({
   addUris: (uris: string[], replace?: boolean) => void;
   removeUris: (uris: string[]) => void;
 }) {
+  const toast = useToast();
+  const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [album, setAlbum] = useState("");
   const [greek, setGreek] = useState("");
@@ -265,6 +337,31 @@ function ManualPicker({
       return { ...p, [key]: { ...cur, [which]: value } };
     });
   const reset = () => { setSearch(""); setAlbum(""); setGreek(""); setCats({}); setRanges({}); };
+
+  // Saved filters ("smart playlists"): persist and re-apply the filter rules.
+  const savedFilters = useQuery({ queryKey: ["savedFilters"], queryFn: api.savedFilters });
+  const applyRules = (rules: Record<string, unknown>) => {
+    setSearch((rules.search as string) ?? "");
+    setAlbum((rules.album as string) ?? "");
+    setGreek((rules.greek as string) ?? "");
+    setCats((rules.cats as Record<string, string>) ?? {});
+    setRanges((rules.ranges as Record<string, { min: string; max: string }>) ?? {});
+  };
+  const currentRules = () => ({ search, album, greek, cats, ranges });
+  const saveFilterMut = useMutation({
+    mutationFn: (name: string) => api.saveFilter(name, currentRules()),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["savedFilters"] }); toast.notify("Filter saved."); },
+    onError: (e: Error) => toast.notify(e.message, "danger"),
+  });
+  const deleteFilterMut = useMutation({
+    mutationFn: (id: number) => api.deleteFilter(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["savedFilters"] }); toast.notify("Filter deleted."); },
+    onError: (e: Error) => toast.notify(e.message, "danger"),
+  });
+  const saveCurrentFilter = () => {
+    const name = window.prompt("Name this filter (e.g. \"Greek · 124–129 BPM\")")?.trim();
+    if (name) saveFilterMut.mutate(name);
+  };
 
   // Distinct values present in the current pool, per categorical field.
   const catOptions = useMemo(() => {
@@ -299,8 +396,32 @@ function ManualPicker({
 
   const filteredUris = filtered.map((t) => t.uri);
 
+  const savedList = savedFilters.data ?? [];
   return (
     <div className="stack" style={{ gap: "var(--space-3)" }}>
+      <div className="row" style={{ justifyContent: "space-between", gap: "var(--space-2)" }}>
+        <div className="row" style={{ gap: "var(--space-2)", flex: 1, minWidth: 0 }}>
+          <span className="small faint">Saved filters:</span>
+          {savedList.length === 0 && <span className="small muted">none yet</span>}
+          {savedList.map((f: SavedFilter) => (
+            <span key={f.id} className="badge" style={{ gap: "var(--space-1)" }}>
+              <button
+                className="badge__btn"
+                onClick={() => applyRules(f.rules)}
+                title="Apply this filter"
+              >{f.name}</button>
+              <button
+                className="badge__btn badge__btn--x"
+                onClick={() => deleteFilterMut.mutate(f.id)}
+                aria-label={`Delete filter ${f.name}`}
+              >✕</button>
+            </span>
+          ))}
+        </div>
+        <Button variant="ghost" size="sm" onClick={saveCurrentFilter} loading={saveFilterMut.isPending}>
+          Save current filters
+        </Button>
+      </div>
       <div className="row">
         <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Search title or artist…" value={search} onChange={(e) => setSearch(e.target.value)} />
         <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="Album contains…" value={album} onChange={(e) => setAlbum(e.target.value)} />
@@ -352,6 +473,7 @@ function ManualPicker({
               checked={selectedSet.has(t.uri)}
               onChange={(e) => (e.target.checked ? addUris([t.uri]) : removeUris([t.uri]))}
             />
+            <TrackArt url={t.albumArt} size={32} />
             <span className="option__name">
               <strong>{t.title || "(untitled)"}</strong>
               <span className="muted"> — {t.artists}</span>
@@ -418,31 +540,68 @@ function VibePicker({
 
 // -------- Playlist preview + ordering --------------------------------------- //
 function PlaylistCard({
+  env,
+  auth,
   selectedTracks,
   strategy,
+  canUndo,
+  onUndo,
   onStrategy,
   onReapply,
   onRemove,
   onClear,
   onMove,
+  onAdd,
 }: {
+  env: EnvFlags;
+  auth: AuthStatus;
   selectedTracks: Track[];
   strategy: SortStrategy;
+  canUndo: boolean;
+  onUndo: () => void;
   onStrategy: (s: SortStrategy) => void;
   onReapply: () => void;
   onRemove: (uri: string) => void;
   onClear: () => void;
   onMove: (from: number, to: number) => void;
+  onAdd: (uris: string[]) => void;
 }) {
+  const toast = useToast();
   const duration = totalDurationMs(selectedTracks);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
+  // Which track's "similar" drawer is open (by URI), if any.
+  const [similarFor, setSimilarFor] = useState<string | null>(null);
+  const selectedUris = useMemo(() => new Set(selectedTracks.map((t) => t.uri)), [selectedTracks]);
+
+  // Play the built playlist in its current order via the shared Web Playback
+  // controller (same engine as the Player tab).
+  const canPlay = env.spotify && auth.player;
+  const pb = usePlayback(canPlay);
+  const uris = useMemo(() => selectedTracks.map((t) => t.uri), [selectedTracks]);
+  const currentUri = pb.current?.uri ?? null;
+  const playFrom = async (index: number) => {
+    try {
+      await pb.play(uris, index);
+    } catch (e) {
+      toast.notify((e as Error).message, "danger");
+    }
+  };
+
   return (
     <Card>
       <CardHeader
         title="Your playlist"
         subtitle={`${selectedTracks.length} tracks · ${formatDuration(duration)}`}
-        right={selectedTracks.length > 0 ? <Button variant="ghost" size="sm" onClick={onClear}>Clear</Button> : undefined}
+        right={
+          selectedTracks.length > 0 ? (
+            <div className="row" style={{ gap: "var(--space-2)" }}>
+              {canPlay && <Button size="sm" onClick={() => playFrom(0)}>▶ Play all</Button>}
+              <Button variant="ghost" size="sm" disabled={!canUndo} onClick={onUndo} aria-label="Undo last change">↶ Undo</Button>
+              <Button variant="ghost" size="sm" onClick={onClear}>Clear</Button>
+            </div>
+          ) : undefined
+        }
       />
       <CardBody>
         {selectedTracks.length === 0 ? (
@@ -456,44 +615,133 @@ function PlaylistCard({
               <Button variant="secondary" size="sm" onClick={onReapply}>Re-apply order</Button>
             </div>
             <div className="multiselect__box" style={{ maxHeight: 420 }}>
-              {selectedTracks.map((t, i) => (
-                <div
-                  className="option"
-                  key={t.uri}
-                  draggable
-                  onDragStart={(e) => { setDragIndex(i); e.dataTransfer.effectAllowed = "move"; }}
-                  onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (overIndex !== i) setOverIndex(i); }}
-                  onDrop={(e) => { e.preventDefault(); if (dragIndex !== null) onMove(dragIndex, i); setDragIndex(null); setOverIndex(null); }}
-                  onDragEnd={() => { setDragIndex(null); setOverIndex(null); }}
-                  style={{
-                    cursor: "grab",
-                    opacity: dragIndex === i ? 0.4 : 1,
-                    boxShadow:
-                      overIndex === i && dragIndex !== null && dragIndex !== i
-                        ? (i < dragIndex ? "inset 0 2px 0 0 var(--accent)" : "inset 0 -2px 0 0 var(--accent)")
-                        : undefined,
-                  }}
-                >
-                  <span className="faint" aria-hidden style={{ userSelect: "none" }} title="Drag to reorder">⠿</span>
-                  <MixDot prev={i > 0 ? selectedTracks[i - 1] : null} curr={t} />
-                  <span className="faint small" style={{ width: 28, textAlign: "right" }}>{i + 1}</span>
-                  <span className="option__name">
-                    <strong>{t.title || "(untitled)"}</strong>
-                    <span className="muted"> — {t.artists}</span>
-                  </span>
-                  <TrackChips track={t} />
-                  <button className="btn btn--ghost btn--sm" onClick={() => onRemove(t.uri)} aria-label="Remove">✕</button>
-                </div>
-              ))}
+              {selectedTracks.map((t, i) => {
+                const isCurrent = currentUri === t.uri;
+                return (
+                  <div
+                    className="option"
+                    key={t.uri}
+                    draggable
+                    onDragStart={(e) => { setDragIndex(i); e.dataTransfer.effectAllowed = "move"; }}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (overIndex !== i) setOverIndex(i); }}
+                    onDrop={(e) => { e.preventDefault(); if (dragIndex !== null) onMove(dragIndex, i); setDragIndex(null); setOverIndex(null); }}
+                    onDragEnd={() => { setDragIndex(null); setOverIndex(null); }}
+                    style={{
+                      cursor: "grab",
+                      opacity: dragIndex === i ? 0.4 : 1,
+                      boxShadow:
+                        overIndex === i && dragIndex !== null && dragIndex !== i
+                          ? (i < dragIndex ? "inset 0 2px 0 0 var(--accent)" : "inset 0 -2px 0 0 var(--accent)")
+                          : undefined,
+                    }}
+                  >
+                    <span className="faint" aria-hidden style={{ userSelect: "none" }} title="Drag to reorder">⠿</span>
+                    <MixDot prev={i > 0 ? selectedTracks[i - 1] : null} curr={t} />
+                    <span className="faint small" style={{ width: 28, textAlign: "right" }}>{i + 1}</span>
+                    <TrackArt url={t.albumArt} size={32} />
+                    <span className="option__name">
+                      <strong>{isCurrent ? "🔊 " : ""}{t.title || "(untitled)"}</strong>
+                      <span className="muted"> — {t.artists}</span>
+                    </span>
+                    <TrackChips track={t} />
+                    <button
+                      className="btn btn--ghost btn--sm"
+                      style={{ color: similarFor === t.uri ? "var(--brand)" : undefined }}
+                      onClick={() => setSimilarFor((u) => (u === t.uri ? null : t.uri))}
+                      aria-label={`Find tracks similar to ${t.title}`}
+                      title="More like this"
+                    >✨</button>
+                    {canPlay && (
+                      <button className="btn btn--ghost btn--sm" onClick={() => playFrom(i)} aria-label={`Play ${t.title}`}>▶</button>
+                    )}
+                    <button className="btn btn--ghost btn--sm" onClick={() => onRemove(t.uri)} aria-label="Remove">✕</button>
+                  </div>
+                );
+              })}
             </div>
+            {similarFor && (
+              <SimilarDrawer
+                seedUri={similarFor}
+                selectedUris={selectedUris}
+                onClose={() => setSimilarFor(null)}
+                onAdd={(uris) => onAdd(uris)}
+              />
+            )}
             <span className="small faint">
               Drag <span aria-hidden>⠿</span> to reorder by hand. Dots show mix quality from the previous track:
               <span className="mix mix--great" /> smooth, <span className="mix mix--ok" /> ok, <span className="mix mix--jump" /> jump.
             </span>
+
+            {!canPlay && (env.spotify ? (
+              <div className="row" style={{ justifyContent: "space-between", gap: "var(--space-3)", borderTop: "1px solid var(--border)", paddingTop: "var(--space-4)" }}>
+                <span className="muted small">Connect the player to play these tracks here (needs Spotify Premium).</span>
+                <Button size="sm" onClick={() => { window.location.href = api.loginUrl("player"); }}>Connect Spotify (player)</Button>
+              </div>
+            ) : (
+              <span className="small faint" style={{ borderTop: "1px solid var(--border)", paddingTop: "var(--space-4)" }}>
+                Set the SPOTIPY_* variables in <code>.env</code> to play tracks here.
+              </span>
+            ))}
           </>
         )}
       </CardBody>
     </Card>
+  );
+}
+
+// "More like this": nearest-neighbour tracks over the audio-feature vector,
+// shown inline with add buttons. Powers "more like this" / auto-extend.
+function SimilarDrawer({
+  seedUri,
+  selectedUris,
+  onClose,
+  onAdd,
+}: {
+  seedUri: string;
+  selectedUris: Set<string>;
+  onClose: () => void;
+  onAdd: (uris: string[]) => void;
+}) {
+  const sim = useQuery({ queryKey: ["similar", seedUri], queryFn: () => api.similar(seedUri, 20) });
+  const candidates = (sim.data?.tracks ?? []).filter((t) => !selectedUris.has(t.uri));
+
+  return (
+    <div className="stack" style={{ gap: "var(--space-2)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "var(--space-3)", background: "var(--surface-2)" }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <span className="small muted">More like this</span>
+        <div className="row" style={{ gap: "var(--space-2)" }}>
+          {candidates.length > 0 && (
+            <Button variant="secondary" size="sm" onClick={() => onAdd(candidates.map((t) => t.uri))}>
+              + Add all {candidates.length}
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close similar">✕</Button>
+        </div>
+      </div>
+      {sim.isLoading && <span className="small faint">Finding similar tracks…</span>}
+      {sim.isError && <Callout tone="danger">{(sim.error as Error).message}</Callout>}
+      {sim.data && !sim.data.hasFeatures && (
+        <Callout tone="warn">This track has no audio features, so similarity can't be computed. Run feature enrichment first.</Callout>
+      )}
+      {sim.data?.hasFeatures && candidates.length === 0 && (
+        <span className="small faint">No more similar tracks to add.</span>
+      )}
+      {candidates.length > 0 && (
+        <div className="multiselect__box" style={{ maxHeight: 260 }}>
+          {candidates.map((t) => (
+            <div className="option" key={t.uri}>
+              <TrackArt url={t.albumArt} size={28} />
+              <span className="option__name">
+                <strong>{t.title || "(untitled)"}</strong>
+                <span className="muted"> — {t.artists}</span>
+              </span>
+              <TrackChips track={t} />
+              <button className="btn btn--ghost btn--sm" onClick={() => onAdd([t.uri])} aria-label={`Add ${t.title}`}>+ Add</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -520,11 +768,15 @@ function CreateCard({
   auth,
   selected,
   selectedTracks,
+  editing,
+  playlists,
 }: {
   env: EnvFlags;
   auth: AuthStatus;
   selected: string[];
   selectedTracks: Track[];
+  editing: { id: number; name: string } | null;
+  playlists: PlaylistInfo[];
 }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -532,20 +784,41 @@ function CreateCard({
   const [jobId, setJobId] = useState<string | null>(null);
   const [savedName, setSavedName] = useState<string | null>(null);
   const stream = useJobStream(jobId, (ok) => {
-    toast.notify(ok ? "Playlist created on Spotify." : "Playlist creation failed. See the log.", ok ? "ok" : "danger");
+    toast.notify(ok ? "Playlist pushed to Spotify." : "Push to Spotify failed. See the log.", ok ? "ok" : "danger");
   });
+
+  const editingInfo = editing ? playlists.find((p) => p.id === editing.id) : undefined;
+  const editingHasSpotify = !!editingInfo?.spotifyPlaylistId;
 
   const refreshData = () => {
     qc.invalidateQueries({ queryKey: ["playlists"] });
     qc.invalidateQueries({ queryKey: ["stats"] });
   };
 
+  // --- Editing an existing curated playlist in place --------------------- //
+  const updateMut = useMutation({
+    mutationFn: () => api.updatePlaylistTracks(editing!.id, selected),
+    onSuccess: (res) => { refreshData(); toast.notify(`Updated "${editing!.name}" (${res.count} tracks).`); },
+    onError: (e: Error) => toast.notify(e.message, "danger"),
+  });
+  const pushEditMut = useMutation({
+    mutationFn: async () => {
+      // Save edits to the DB first, then push (update in place if possible).
+      await api.updatePlaylistTracks(editing!.id, selected);
+      refreshData();
+      const job = await api.createPlaylist(editing!.id, editing!.name, editingHasSpotify);
+      return job.jobId;
+    },
+    onSuccess: (id) => { setJobId(id); refreshData(); },
+    onError: (e: Error) => toast.notify(e.message, "danger"),
+  });
+
+  // --- Creating a brand-new curated playlist ----------------------------- //
   const saveMut = useMutation({
     mutationFn: () => api.curateSave(name.trim(), selected),
     onSuccess: (res) => { setSavedName(res.name); refreshData(); toast.notify(`Saved "${res.name}" (${res.count} tracks).`); },
     onError: (e: Error) => toast.notify(e.message, "danger"),
   });
-
   const createMut = useMutation({
     mutationFn: async () => {
       const saved = await api.curateSave(name.trim(), selected);
@@ -558,9 +831,41 @@ function CreateCard({
     onError: (e: Error) => toast.notify(e.message, "danger"),
   });
 
-  const disabled = !name.trim() || selectedTracks.length === 0;
-  const busy = saveMut.isPending || createMut.isPending || (jobId !== null && !stream.done);
+  const empty = selectedTracks.length === 0;
+  const pushBusy = jobId !== null && !stream.done;
 
+  if (editing) {
+    return (
+      <Card>
+        <CardHeader
+          title={`Save changes to "${editing.name}"`}
+          subtitle="You're editing an existing curated playlist in place"
+        />
+        <CardBody>
+          <div className="row">
+            <Button variant="secondary" disabled={empty} loading={updateMut.isPending} onClick={() => updateMut.mutate()}>
+              Update playlist
+            </Button>
+            {env.spotify && auth.write && (
+              <Button disabled={empty || pushEditMut.isPending || pushBusy} loading={pushEditMut.isPending || pushBusy} onClick={() => pushEditMut.mutate()}>
+                {editingHasSpotify ? "Update on Spotify" : "Push to Spotify"}
+              </Button>
+            )}
+            <span className="small faint">{selectedTracks.length} tracks in the shown order.</span>
+          </div>
+          {env.spotify && !auth.write && (
+            <div className="row">
+              <span className="muted small">Pushing to Spotify needs write access.</span>
+              <Button size="sm" onClick={() => { window.location.href = api.loginUrl("write"); }}>Connect Spotify (write)</Button>
+            </div>
+          )}
+          {jobId && <LogPanel lines={stream.lines} status={stream.status} />}
+        </CardBody>
+      </Card>
+    );
+  }
+
+  const disabled = !name.trim() || empty;
   return (
     <Card>
       <CardHeader title="Save & create" subtitle="Save the curated playlist to the database, and optionally create it on Spotify in this order" />
@@ -583,7 +888,7 @@ function CreateCard({
           <Button variant="secondary" disabled={disabled} loading={saveMut.isPending} onClick={() => saveMut.mutate()}>
             Save to database
           </Button>
-          <Button disabled={disabled || !env.spotify || !auth.write} loading={busy && createMut.isPending} onClick={() => createMut.mutate()}>
+          <Button disabled={disabled || !env.spotify || !auth.write} loading={pushBusy && createMut.isPending} onClick={() => createMut.mutate()}>
             Create Spotify playlist
           </Button>
           <span className="small faint">{selectedTracks.length} tracks will be added in the shown order.</span>
