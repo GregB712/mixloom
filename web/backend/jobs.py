@@ -1,6 +1,10 @@
 """In-memory async job registry. Runs a script as a subprocess per job and
 captures merged stdout/stderr line-by-line for live streaming over SSE."""
 
+# Defer annotation evaluation: JobRegistry.list() shadows the builtin `list`,
+# so an eagerly-evaluated `list[str]` annotation would resolve to the method.
+from __future__ import annotations
+
 import subprocess
 import sys
 import threading

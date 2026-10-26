@@ -199,6 +199,10 @@ export const api = {
   playlistTracks: (id: number) => get<PlayerTrack[]>(`/api/playlists/${id}/tracks`),
   updatePlaylistTracks: (id: number, uris: string[]) =>
     put<{ playlistId: number; count: number }>(`/api/playlists/${id}/tracks`, { uris }),
+  deletePlaylist: (id: number) =>
+    del<{ playlistId: number; name: string; removedTracks: number; removedArtists: number }>(
+      `/api/playlists/${id}`,
+    ),
   stats: (playlistId: number | null) =>
     get<FileStats>(`/api/stats${playlistId != null ? `?playlistId=${playlistId}` : ""}`),
   rows: (playlistId: number | null, offset: number, limit: number, q: string) =>

@@ -8,9 +8,12 @@ import { api } from "../api/client";
 // window and then append later windows to the playback queue as the current one
 // nears its end (see maybeExtendQueue), letting long playlists play through.
 export const QUEUE_LIMIT = 100;
-const EXTEND_BATCH = 50; // how many more URIs to append each time
+const EXTEND_BATCH = 20; // how many more URIs to append each time
 const EXTEND_WHEN_REMAINING = 12; // append when this few upcoming tracks remain
+const EXTEND_SPACING_MS = 350; // gap between queue appends, to stay under Spotify's rate limit
 const SDK_SRC = "https://sdk.scdn.co/spotify-player.js";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type SdkState = any; // Spotify.PlaybackState (SDK is untyped)
 
@@ -31,22 +34,44 @@ export const controller = {
   preMuteVolume: 0.7,
   queue: null as Queue | null,
   extending: false,
+  extendCooldownUntil: 0, // epoch ms; set from a 429 Retry-After to pause appends
   subscribers: new Set<() => void>(),
   notify() {
     this.subscribers.forEach((fn) => fn());
   },
 };
 
-async function spotifyFetch(path: string, init: RequestInit = {}): Promise<Response> {
+// Cache the player access token instead of asking the backend on every request;
+// the backend-issued token is valid for ~1 hour and auto-refreshes there, so a
+// short client-side cache cuts the request volume that was contributing to 429s.
+let cachedToken: { token: string; at: number } | null = null;
+const TOKEN_TTL_MS = 30 * 60 * 1000;
+
+async function getToken(force = false): Promise<string> {
+  if (!force && cachedToken && Date.now() - cachedToken.at < TOKEN_TTL_MS) {
+    return cachedToken.token;
+  }
   const { accessToken } = await api.playerToken();
-  return fetch(`https://api.spotify.com/v1${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      ...(init.headers || {}),
-    },
-  });
+  cachedToken = { token: accessToken, at: Date.now() };
+  return accessToken;
+}
+
+async function spotifyFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const call = (token: string) =>
+    fetch(`https://api.spotify.com/v1${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+      },
+    });
+  let res = await call(await getToken());
+  // A cached token may have gone stale; refresh once on 401 and retry.
+  if (res.status === 401) {
+    res = await call(await getToken(true));
+  }
+  return res;
 }
 
 export function ensurePlayer() {
@@ -127,6 +152,9 @@ export async function playUris(uris: string[], index = 0) {
     method: "PUT",
     body: JSON.stringify({ uris: window }),
   });
+  if (res.status === 429) {
+    throw new Error("Spotify is rate-limiting playback — wait a few seconds and try again.");
+  }
   if (!res.ok && res.status !== 202 && res.status !== 204) {
     const detail = await res.json().catch(() => ({}));
     throw new Error(detail?.error?.message || `Spotify playback error ${res.status}`);
@@ -134,12 +162,20 @@ export async function playUris(uris: string[], index = 0) {
   controller.queue = { uris, dispatched: index + window.length };
 }
 
+// Seconds to back off after a 429, honoring Retry-After when present.
+function retryAfterMs(res: Response): number {
+  const header = Number(res.headers.get("Retry-After"));
+  return (Number.isFinite(header) && header > 0 ? header + 1 : 5) * 1000;
+}
+
 // When the current window is nearly exhausted, append the next batch of URIs to
 // Spotify's playback queue so a long playlist keeps going past the first 100.
+// Requests are spaced out and back off on 429 so we don't trip the rate limiter.
 async function maybeExtendQueue(state: SdkState) {
   const q = controller.queue;
   if (!q || controller.extending) return;
   if (q.dispatched >= q.uris.length) return;
+  if (Date.now() < controller.extendCooldownUntil) return;
   const remaining = state?.track_window?.next_tracks?.length ?? 0;
   if (remaining > EXTEND_WHEN_REMAINING) return;
 
@@ -151,11 +187,17 @@ async function maybeExtendQueue(state: SdkState) {
         `/me/player/queue?uri=${encodeURIComponent(uri)}&device_id=${controller.deviceId}`,
         { method: "POST" },
       );
+      if (res.status === 429) {
+        // Rate limited: pause further appends and retry after the cooldown.
+        controller.extendCooldownUntil = Date.now() + retryAfterMs(res);
+        break;
+      }
       if (!res.ok && res.status !== 204) break;
       q.dispatched += 1;
+      await sleep(EXTEND_SPACING_MS);
     }
   } catch {
-    // Leave dispatched where it got to; we'll retry on the next state change.
+    // Leave dispatched where it got to; we'll retry on a later state change.
   } finally {
     controller.extending = false;
   }

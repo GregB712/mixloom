@@ -114,6 +114,24 @@ def test_set_spotify_playlist_id(test_db):
     assert row["spotifyPlaylistId"] == "SPNEW99"
 
 
+def test_delete_playlist_cleans_orphans(test_db):
+    # ddd is seeded into no playlist, so it is an orphan the cleanup should sweep.
+    assert "spotify:track:ddd" in db.tracks_by_uri(["spotify:track:ddd"])
+
+    saved = db.save_curated("ToDelete", ["spotify:track:aaa", "spotify:track:bbb"])
+    pid = saved["playlistId"]
+    res = db.delete_playlist(pid)
+    assert res is not None and res["name"] == "ToDelete"
+    assert not any(p["id"] == pid for p in db.list_playlists())
+
+    # Shared tracks (still in Exported) survive; the orphaned ddd is removed.
+    assert "spotify:track:aaa" in db.tracks_by_uri(["spotify:track:aaa"])
+    assert db.tracks_by_uri(["spotify:track:ddd"]) == {}
+    assert res["removedTracks"] >= 1
+
+    assert db.delete_playlist(999999) is None
+
+
 def test_playlist_mirror_and_tracks_by_uri(test_db):
     exported = next(r for r in db.list_playlists() if r["name"] == "Exported")
     mirror = db.playlist_mirror(exported["id"])

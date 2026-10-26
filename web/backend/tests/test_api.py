@@ -45,6 +45,12 @@ def test_saved_filters_crud_endpoint(client):
     assert client.delete(f"/api/saved-filters/{fid}").status_code == 404
 
 
+def test_delete_missing_playlist_404(client):
+    # Deleting a nonexistent playlist 404s and touches no data (so the db-level
+    # orphan-sweep test, which runs later against the shared DB, is unaffected).
+    assert client.delete("/api/playlists/999999").status_code == 404
+
+
 def test_curate_save_endpoint(client):
     r = client.post("/api/curate/save", json={"name": "Via API", "uris": ["spotify:track:aaa"]})
     assert r.status_code == 200

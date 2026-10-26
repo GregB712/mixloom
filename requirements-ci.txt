@@ -4,6 +4,7 @@ spotipy
 python-dotenv
 pycountry
 psycopg[binary]
+numpy
 fastapi
 uvicorn
 pytest
