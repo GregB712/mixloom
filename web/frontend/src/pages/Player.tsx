@@ -143,6 +143,23 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
     onError: (e: Error) => toast.notify(e.message, "danger"),
   });
 
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => api.deletePlaylist(id),
+    onSuccess: (res) => {
+      if (selected === res.playlistId) setSelected(null);
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
+      const extra = res.removedTracks ? ` (${res.removedTracks} orphaned track${res.removedTracks === 1 ? "" : "s"} removed)` : "";
+      toast.notify(`Deleted "${res.name}"${extra}.`, "ok");
+    },
+    onError: (e: Error) => toast.notify(e.message, "danger"),
+  });
+  const confirmDelete = (pl: PlaylistInfo) => {
+    if (window.confirm(`Delete "${pl.name}" from the database? This removes it from Mixloom only — your Spotify account is not affected.`)) {
+      deleteMut.mutate(pl.id);
+    }
+  };
+
   async function playFrom(items: PlayerTrack[], index: number) {
     try {
       await pb.play(items.map((t) => t.uri), index);
@@ -180,7 +197,9 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
                   key={p.id}
                   pl={p}
                   active={p.id === selected}
+                  deleting={deleteMut.isPending}
                   onClick={() => setSelected(p.id)}
+                  onDelete={() => confirmDelete(p)}
                 />
               ))}
             </div>
@@ -239,26 +258,54 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
   );
 }
 
-function PlaylistRow({ pl, active, onClick }: { pl: PlaylistInfo; active: boolean; onClick: () => void }) {
+function PlaylistRow({
+  pl,
+  active,
+  deleting,
+  onClick,
+  onDelete,
+}: {
+  pl: PlaylistInfo;
+  active: boolean;
+  deleting: boolean;
+  onClick: () => void;
+  onDelete: () => void;
+}) {
   return (
-    <button
-      onClick={onClick}
+    <div
       className={active ? "badge badge--accent" : "badge"}
       style={{
-        cursor: "pointer",
         display: "flex",
-        justifyContent: "space-between",
+        alignItems: "center",
         gap: "var(--space-2)",
         width: "100%",
-        textAlign: "left",
-        padding: "var(--space-2) var(--space-3)",
+        padding: "var(--space-1) var(--space-2) var(--space-1) var(--space-3)",
       }}
     >
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {pl.curated ? "★ " : ""}{pl.name}
-      </span>
-      <span className="faint">{pl.trackCount}</span>
-    </button>
+      <button
+        onClick={onClick}
+        title={pl.name}
+        style={{
+          cursor: "pointer", border: 0, background: "transparent", color: "inherit",
+          font: "inherit", flex: 1, minWidth: 0, display: "flex",
+          justifyContent: "space-between", gap: "var(--space-2)", textAlign: "left",
+          padding: "var(--space-1) 0",
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {pl.curated ? "★ " : ""}{pl.name}
+        </span>
+        <span className="faint">{pl.trackCount}</span>
+      </button>
+      <button
+        className="iconbtn"
+        style={{ width: 24, height: 24, fontSize: 13 }}
+        disabled={deleting}
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        aria-label={`Delete ${pl.name} from the database`}
+        title="Delete from database"
+      >🗑</button>
+    </div>
   );
 }
 

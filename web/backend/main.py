@@ -265,6 +265,15 @@ def update_playlist_tracks_endpoint(playlist_id: int, body: PlaylistTracksBody):
     return result
 
 
+@app.delete("/api/playlists/{playlist_id}")
+def delete_playlist_endpoint(playlist_id: int):
+    """Remove a playlist from the database (does not touch Spotify)."""
+    result = db.delete_playlist(playlist_id)
+    if result is None:
+        raise HTTPException(404, "Playlist not found.")
+    return result
+
+
 def _live_playlist_uris(spotify_id: str) -> list[str]:
     """Fetch the current track URIs of a Spotify playlist (read scope)."""
     sp = spotipy.Spotify(auth_manager=_oauth("read"))

@@ -487,6 +487,38 @@ def tracks_by_uri(uris: list[str]) -> dict[str, dict]:
     return {r[0]: {"title": r[1] or "", "artists": r[2] or ""} for r in rows}
 
 
+def delete_playlist(playlist_id: int) -> dict | None:
+    """Delete a playlist (exported or curated) from the database. Its
+    playlist_tracks links go via cascade; tracks that are left in no playlist
+    (and artists left on no track) are then cleaned up, so the shared library
+    doesn't accumulate orphans. Tracks still used by another playlist are kept.
+    Returns None if the playlist does not exist."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            row = cur.execute(
+                "SELECT name FROM playlists WHERE id = %s", (playlist_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            name = row[0]
+            cur.execute("DELETE FROM playlists WHERE id = %s", (playlist_id,))
+            removed_tracks = cur.execute(
+                "DELETE FROM tracks WHERE id NOT IN "
+                "(SELECT track_id FROM playlist_tracks) RETURNING id"
+            ).rowcount
+            removed_artists = cur.execute(
+                "DELETE FROM artists WHERE id NOT IN "
+                "(SELECT artist_id FROM track_artists) RETURNING id"
+            ).rowcount
+        conn.commit()
+    return {
+        "playlistId": playlist_id,
+        "name": name,
+        "removedTracks": removed_tracks,
+        "removedArtists": removed_artists,
+    }
+
+
 def set_spotify_playlist_id(playlist_id: int, spotify_playlist_id: str) -> None:
     """Record the Spotify id of the playlist a push created, so later pushes can
     update that playlist in place instead of creating a new one."""
