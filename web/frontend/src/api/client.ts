@@ -122,6 +122,25 @@ export type RowsPage = {
   limit: number;
 };
 
+// A track with its full hand-editable metadata, for the Tracks (metadata) tab.
+export type TrackDetail = {
+  id: number;
+  uri: string | null;
+  title: string;
+  artists: string;
+  album: string;
+  albumArt: string | null;
+  featureSource: string | null;
+  missing: string[]; // core fields that are still empty
+  fields: Record<string, string | number | null>; // column name -> value
+};
+export type TracksDetailPage = {
+  tracks: TrackDetail[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) {
@@ -210,6 +229,15 @@ export const api = {
       `/api/rows?offset=${offset}&limit=${limit}&q=${encodeURIComponent(q)}` +
         (playlistId != null ? `&playlistId=${playlistId}` : ""),
     ),
+
+  tracksDetail: (playlistId: number | null, missing: boolean, q: string, offset: number, limit: number) =>
+    get<TracksDetailPage>(
+      `/api/tracks?offset=${offset}&limit=${limit}&missing=${missing}&q=${encodeURIComponent(q)}` +
+        (playlistId != null ? `&playlistId=${playlistId}` : ""),
+    ),
+  updateTrack: (id: number, fields: Record<string, string | number | null>) =>
+    put<TrackDetail>(`/api/tracks/${id}`, { fields }),
+  trackFieldOptions: () => get<{ genre: string[]; mood: string[] }>("/api/tracks/field-options"),
 
   similar: (uri: string, limit = 20) =>
     get<SimilarResult>(`/api/tracks/similar?uri=${encodeURIComponent(uri)}&limit=${limit}`),

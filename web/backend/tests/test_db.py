@@ -140,3 +140,73 @@ def test_playlist_mirror_and_tracks_by_uri(test_db):
     assert len(mirror["uris"]) == 3
     lookup = db.tracks_by_uri(["spotify:track:aaa"])
     assert lookup["spotify:track:aaa"]["title"] == "Alpha"
+
+
+# -------- metadata editor -------------------------------------------------- #
+def _insert_bare_track(uri: str, title: str) -> int:
+    with db._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO tracks (spotify_uri, title, feature_source) VALUES (%s,%s,NULL) RETURNING id",
+            (uri, title),
+        )
+        tid = cur.fetchone()[0]
+        conn.commit()
+    return tid
+
+
+def _delete_track(tid: int) -> None:
+    with db._connect() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM tracks WHERE id = %s", (tid,))
+        conn.commit()
+
+
+def test_list_tracks_detail_and_missing_filter(test_db):
+    tid = _insert_bare_track("spotify:track:meta1", "Zeta Meta")
+    try:
+        page = db.list_tracks_detail(None, False, "zeta meta", 0, 50)
+        assert page is not None
+        hit = next(t for t in page["tracks"] if t["id"] == tid)
+        # A bare track is missing every core field and exposes all editable ones.
+        assert set(hit["missing"]) == set(db.CORE_FIELDS)
+        assert "bpm" in hit["fields"] and hit["fields"]["bpm"] is None
+
+        # It appears under the missing-only filter.
+        miss = db.list_tracks_detail(None, True, "zeta meta", 0, 50)
+        assert any(t["id"] == tid for t in miss["tracks"])
+    finally:
+        _delete_track(tid)
+
+
+def test_update_track_metadata_marks_manual_source(test_db):
+    tid = _insert_bare_track("spotify:track:meta2", "Eta Meta")
+    try:
+        res = db.update_track_metadata(tid, {"bpm": "128", "genre": "house", "nope": "x"})
+        assert res is not None
+        assert res["fields"]["bpm"] == 128.0
+        assert res["fields"]["genre"] == "house"
+        # Filling features on an unsourced track records a manual source.
+        assert res["featureSource"] == "manual"
+        assert "bpm" not in res["missing"] and "genre" not in res["missing"]
+
+        # Empty string clears a field back to NULL.
+        cleared = db.update_track_metadata(tid, {"genre": ""})
+        assert cleared["fields"]["genre"] is None
+        assert "genre" in cleared["missing"]
+
+        assert db.update_track_metadata(99999999, {"bpm": "120"}) is None
+    finally:
+        _delete_track(tid)
+
+
+def test_list_tracks_detail_playlist_scope(test_db):
+    exported = next(r for r in db.list_playlists() if r["name"] == "Exported")
+    page = db.list_tracks_detail(exported["id"], False, "", 0, 50)
+    assert page is not None
+    assert page["total"] == len(db.playlist_tracks(exported["id"]))
+    assert db.list_tracks_detail(999999, False, "", 0, 50) is None
+
+
+def test_track_field_options(test_db):
+    opts = db.track_field_options()
+    assert set(opts) == {"genre", "mood"}
+    assert isinstance(opts["genre"], list) and isinstance(opts["mood"], list)

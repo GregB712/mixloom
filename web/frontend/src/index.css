@@ -528,3 +528,53 @@ table.data tr:hover td { background: var(--surface-hover); }
   * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   .btn:hover { transform: none !important; }
 }
+
+/* --- Modal (metadata editor, etc.) ------------------------------------- */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: var(--space-6) var(--space-4);
+  background: rgba(0, 0, 0, 0.55);
+  overflow-y: auto;
+}
+.modal {
+  width: 100%; max-width: 680px; margin: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column;
+}
+.modal__head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+.modal__title { font-size: var(--text-lg); font-weight: 700; margin: 0; }
+.modal__close {
+  background: none; border: none; color: var(--text-muted);
+  font-size: var(--text-base); cursor: pointer; padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.modal__close:hover { background: var(--surface-hover); color: var(--text); }
+.modal__body { padding: var(--space-5); overflow-y: auto; }
+.modal__foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+/* Field grid inside the editor. */
+.fieldgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.fieldgrid .field.is-missing .label { color: var(--warn); }
+.fieldgrid .field.is-missing .input { border-color: var(--warn); }
+.fieldgroup { border: none; padding: 0; margin: 0 0 var(--space-5); }
+.fieldgroup legend { font-size: var(--text-sm); font-weight: 700; color: var(--text-muted); margin-bottom: var(--space-3); }
+
+/* Clickable table rows (metadata list). */
+table.data tr.clickable { cursor: pointer; }
+table.data tr.clickable:hover td { background: var(--surface-hover); }
+
+@media (max-width: 640px) {
+  .fieldgrid { grid-template-columns: 1fr; }
+}
