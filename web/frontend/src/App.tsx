@@ -9,6 +9,7 @@ import { useToast } from "./components/ui/Toast";
 import { useTheme } from "./hooks/useTheme";
 import { Curate } from "./pages/Curate";
 import { Dashboard } from "./pages/Dashboard";
+import { Metadata } from "./pages/Metadata";
 import { Player } from "./pages/Player";
 import { RunPipeline } from "./pages/RunPipeline";
 
@@ -47,6 +48,7 @@ export function App() {
   const navItems = [
     { id: "run", icon: "▶", label: "Run pipeline" },
     { id: "curate", icon: "🎚", label: "Curate" },
+    { id: "tracks", icon: "🏷", label: "Tracks" },
     { id: "dash", icon: "📊", label: "Dashboard" },
     { id: "player", icon: "🎧", label: "Player" },
   ];
@@ -98,6 +100,7 @@ export function App() {
 
           {tab === "run" && <RunPipeline env={env} auth={authState} />}
           {tab === "curate" && <Curate env={env} auth={authState} />}
+          {tab === "tracks" && <Metadata />}
           {tab === "dash" && <Dashboard />}
           {tab === "player" && <Player env={env} auth={authState} />}
         </div>

@@ -58,3 +58,39 @@ def test_curate_save_endpoint(client):
 
     bad = client.post("/api/curate/save", json={"name": "", "uris": ["spotify:track:aaa"]})
     assert bad.status_code == 400
+
+
+def test_tracks_list_endpoint(client):
+    r = client.get("/api/tracks", params={"q": "alpha", "limit": 10})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] >= 1
+    t = next(x for x in body["tracks"] if x["title"] == "Alpha")
+    assert "fields" in t and "missing" in t
+
+    assert client.get("/api/tracks", params={"missing": "true"}).status_code == 200
+    assert client.get("/api/tracks", params={"playlistId": 999999}).status_code == 404
+
+
+def test_track_update_endpoint(client):
+    t = next(
+        x for x in client.get("/api/tracks", params={"q": "alpha"}).json()["tracks"]
+        if x["title"] == "Alpha"
+    )
+    tid, orig_genre = t["id"], t["fields"].get("genre")
+
+    r = client.put(f"/api/tracks/{tid}", json={"fields": {"genre": "testgenre"}})
+    assert r.status_code == 200
+    assert r.json()["fields"]["genre"] == "testgenre"
+
+    # Revert so later count-based tests see the seed unchanged.
+    client.put(f"/api/tracks/{tid}", json={"fields": {"genre": orig_genre or ""}})
+
+    assert client.put("/api/tracks/999999", json={"fields": {"bpm": "120"}}).status_code == 404
+
+
+def test_track_field_options_endpoint(client):
+    r = client.get("/api/tracks/field-options")
+    assert r.status_code == 200
+    body = r.json()
+    assert "genre" in body and "mood" in body

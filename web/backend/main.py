@@ -7,6 +7,7 @@ Run with the project venv:  python -m uvicorn main:app --host 127.0.0.1 --port 8
 import asyncio
 import json
 import os
+from typing import Any
 
 import spotipy
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -379,6 +380,40 @@ def tracks_similar(uri: str = Query(...), limit: int = Query(20, ge=1, le=100)):
     result = db.find_similar(uri, limit)
     if result is None:
         raise HTTPException(404, "Track not found in the database.")
+    return result
+
+
+@app.get("/api/tracks")
+def tracks_list(
+    playlistId: int | None = Query(None),
+    missing: bool = Query(False),
+    q: str = Query(""),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Tracks with their full editable metadata, for the metadata editor."""
+    result = db.list_tracks_detail(playlistId, missing, q, offset, limit)
+    if result is None:
+        raise HTTPException(404, "Playlist not found.")
+    return result
+
+
+@app.get("/api/tracks/field-options")
+def track_field_options():
+    """Distinct existing genre/mood values for the editor's suggestion lists."""
+    return db.track_field_options()
+
+
+class TrackUpdateBody(BaseModel):
+    fields: dict[str, Any]
+
+
+@app.put("/api/tracks/{track_id}")
+def track_update(track_id: int, body: TrackUpdateBody):
+    """Apply hand edits to one track's metadata (null/empty clears a field)."""
+    result = db.update_track_metadata(track_id, body.fields)
+    if result is None:
+        raise HTTPException(404, "Track not found.")
     return result
 
 

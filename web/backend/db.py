@@ -531,6 +531,156 @@ def set_spotify_playlist_id(playlist_id: int, spotify_playlist_id: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Track metadata editor
+# --------------------------------------------------------------------------- #
+# Hand-editable track columns, grouped by the coercion the updater applies.
+_EDITABLE_TEXT = [
+    "title", "artists_text", "album", "release_date", "isrc",
+    "key", "camelot", "open_key", "mood", "genre",
+]
+_EDITABLE_FLOAT = [
+    "bpm", "bpm_confidence", "key_confidence", "energy", "loudness_db",
+    "danceability", "valence", "speechiness", "instrumentalness", "liveness",
+    "acousticness",
+]
+_EDITABLE_INT = ["duration_ms", "mode", "time_signature"]
+EDITABLE_FIELDS = _EDITABLE_TEXT + _EDITABLE_FLOAT + _EDITABLE_INT
+
+# Columns whose presence defines "complete" metadata; drive the missing-only
+# filter and the per-track missing list surfaced in the editor.
+CORE_FIELDS = ["bpm", "key", "camelot", "energy", "danceability", "valence", "genre", "mood"]
+
+# Editable columns that are audio features: filling any of these by hand marks a
+# previously unfeatured track as manually sourced, so it counts in feature stats.
+_FEATURE_EDITABLE = set(_EDITABLE_FLOAT) | {
+    "key", "camelot", "open_key", "mood", "genre", "mode", "time_signature",
+}
+
+_DETAIL_EXTRA = ["id", "spotify_uri", "album_art_url", "feature_source"]
+_DETAIL_SELECT = ", ".join(f"t.{c}" for c in [*_DETAIL_EXTRA, *EDITABLE_FIELDS])
+
+
+def _coerce_field(col: str, value) -> object:
+    """Coerce a JSON value to the column's stored type; '' / None clear it."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "":
+        return None
+    if col in _EDITABLE_INT:
+        try:
+            return int(float(s))
+        except ValueError:
+            return None
+    if col in _EDITABLE_FLOAT:
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return s
+
+
+def _detail_from_row(row: tuple) -> dict:
+    """Shape a detail dict from a row selecting _DETAIL_EXTRA + EDITABLE_FIELDS."""
+    extra = dict(zip(_DETAIL_EXTRA, row[: len(_DETAIL_EXTRA)]))
+    vals = dict(zip(EDITABLE_FIELDS, row[len(_DETAIL_EXTRA):]))
+    fields = {c: (_num(v) if c in _EDITABLE_FLOAT else v) for c, v in vals.items()}
+    return {
+        "id": extra["id"],
+        "uri": extra["spotify_uri"],
+        "albumArt": extra["album_art_url"],
+        "featureSource": extra["feature_source"],
+        "title": vals.get("title") or "",
+        "artists": vals.get("artists_text") or "",
+        "album": vals.get("album") or "",
+        "missing": [c for c in CORE_FIELDS if vals.get(c) is None],
+        "fields": fields,
+    }
+
+
+def list_tracks_detail(playlist_id: int | None, missing_only: bool,
+                       query: str, offset: int, limit: int) -> dict | None:
+    """Paginated tracks with their full editable metadata, scoped to the whole
+    library (playlist_id=None) or one playlist. Returns None if the playlist
+    does not exist. `missing_only` keeps rows lacking any core field."""
+    with _connect() as conn:
+        ids = _scope_ids(conn, playlist_id)
+        if ids is None:
+            return None
+        where = ["t.id = ANY(%s)"]
+        params: list = [ids]
+        if query.strip():
+            where.append("(lower(t.title) LIKE %s OR lower(t.artists_text) LIKE %s)")
+            like = f"%{query.strip().lower()}%"
+            params += [like, like]
+        if missing_only:
+            conds = " OR ".join(f"t.{c} IS NULL" for c in CORE_FIELDS)
+            where.append(f"({conds})")
+        clause = " AND ".join(where)
+        total = conn.execute(f"SELECT count(*) FROM tracks t WHERE {clause}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT {_DETAIL_SELECT} FROM tracks t WHERE {clause} "
+            f"ORDER BY lower(t.title) OFFSET %s LIMIT %s",
+            params + [offset, limit],
+        ).fetchall()
+    return {
+        "tracks": [_detail_from_row(r) for r in rows],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+def update_track_metadata(track_id: int, patch: dict) -> dict | None:
+    """Apply hand edits to one track's metadata. `patch` maps column name to a
+    new value (None/'' clears it); unknown columns are ignored and `title` is
+    never cleared (it is NOT NULL). If the track had no feature_source and the
+    edit fills any audio-feature column, the source is recorded as 'manual' so
+    the track counts in feature stats. Returns the refreshed detail, or None if
+    the track does not exist."""
+    cols = {k: v for k, v in patch.items() if k in EDITABLE_FIELDS}
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT feature_source FROM tracks WHERE id = %s", (track_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            set_vals = {c: _coerce_field(c, v) for c, v in cols.items()}
+            if set_vals.get("title") is None:
+                set_vals.pop("title", None)  # title is NOT NULL; never clear it
+            if set_vals:
+                if row[0] is None and any(
+                    set_vals.get(c) is not None for c in _FEATURE_EDITABLE if c in set_vals
+                ):
+                    set_vals["feature_source"] = "manual"
+                assignments = ", ".join(f"{c} = %s" for c in set_vals)
+                cur.execute(
+                    f"UPDATE tracks SET {assignments}, updated_at = now() WHERE id = %s",
+                    [*set_vals.values(), track_id],
+                )
+            refreshed = cur.execute(
+                f"SELECT {_DETAIL_SELECT} FROM tracks t WHERE t.id = %s", (track_id,)
+            ).fetchone()
+        conn.commit()
+    return _detail_from_row(refreshed)
+
+
+def track_field_options() -> dict:
+    """Distinct existing values for the free-text tag fields, so the editor can
+    offer them as suggestions while still allowing new ones."""
+    out: dict = {}
+    with _connect() as conn:
+        for col in ("genre", "mood"):
+            out[col] = [
+                r[0] for r in conn.execute(
+                    f"SELECT DISTINCT {col} FROM tracks "
+                    f"WHERE {col} IS NOT NULL AND {col} <> '' ORDER BY {col}"
+                ).fetchall()
+            ]
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Library intelligence
 # --------------------------------------------------------------------------- #
 # Feature columns used for nearest-neighbour similarity, with a per-feature
