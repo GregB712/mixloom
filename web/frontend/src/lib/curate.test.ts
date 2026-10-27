@@ -6,6 +6,7 @@ import {
   energyCurveOrder,
   mixQuality,
   parseCamelot,
+  smoothCurveOrder,
   totalDurationMs,
   vibeGroups,
 } from "./curate";
@@ -95,7 +96,7 @@ describe("applySort", () => {
     expect(applySort(tracks, "manual").map((t) => t.uri)).toEqual(["a", "b", "c"]);
   });
   it("does not drop or duplicate tracks under any strategy", () => {
-    for (const s of ["smooth", "curve", "bpm", "energy", "manual"] as const) {
+    for (const s of ["smooth", "curve", "smoothCurve", "bpm", "energy", "manual"] as const) {
       const out = applySort(tracks, s);
       expect(new Set(out.map((t) => t.uri))).toEqual(new Set(["a", "b", "c"]));
       expect(out).toHaveLength(3);
@@ -124,6 +125,33 @@ describe("energyCurveOrder", () => {
     const tracks = [track({ uri: "a", energy: 0.5 }), track({ uri: "b", energy: null })];
     const ordered = energyCurveOrder(tracks);
     expect(ordered[ordered.length - 1].uri).toBe("b");
+  });
+});
+
+describe("smoothCurveOrder", () => {
+  it("forms an energy hump (middle hotter than the edges) and keeps every track", () => {
+    const tracks = [0.1, 0.9, 0.5, 0.3, 0.7, 0.2, 0.6].map((e, i) =>
+      track({ uri: `t${i}`, energy: e, bpm: 120 + e * 20, camelot: "8A" }),
+    );
+    const out = smoothCurveOrder(tracks);
+    expect(new Set(out.map((t) => t.uri)).size).toBe(tracks.length);
+    const energies = out.map((t) => t.energy as number);
+    const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const third = Math.floor(energies.length / 3);
+    const middle = avg(energies.slice(third, energies.length - third));
+    const edges = avg([...energies.slice(0, third), ...energies.slice(energies.length - third)]);
+    expect(middle).toBeGreaterThan(edges); // warm-up → peak → cool-down
+    expect(energies[0]).toBeLessThan(Math.max(...energies)); // starts below the peak
+  });
+  it("keeps tracks without energy at the end", () => {
+    const tracks = [
+      track({ uri: "a", energy: 0.4 }),
+      track({ uri: "b", energy: 0.8 }),
+      track({ uri: "c", energy: 0.2 }),
+      track({ uri: "x", energy: null }),
+    ];
+    const out = smoothCurveOrder(tracks);
+    expect(out[out.length - 1].uri).toBe("x");
   });
 });
 

@@ -107,7 +107,56 @@ export function energyCurveOrder(tracks: Track[]): Track[] {
   return [...result, ...without];
 }
 
-export type SortStrategy = "smooth" | "curve" | "bpm" | "energy" | "manual";
+// How hard the combined ordering pulls toward the target energy curve, relative
+// to the transition cost. It must outweigh the transition term enough that the
+// arc (warm-up → peak → cool-down) actually forms instead of collapsing into a
+// gentle ramp; transition cost then smooths the ordering among energy-similar
+// candidates.
+const CURVE_ENERGY_WEIGHT = 8;
+
+// Combine the energy curve with smooth transitions: walk a target energy arc
+// (warm-up → mid-set peak → cool-down) and, at each step, pick the remaining
+// track that best balances a smooth transition from the previous track against
+// closeness to the arc's target energy at that position. Tracks without an
+// energy value trail at the end.
+export function smoothCurveOrder(tracks: Track[]): Track[] {
+  const withE = tracks.filter((t) => t.energy !== null);
+  const without = tracks.filter((t) => t.energy === null);
+  const n = withE.length;
+  if (n <= 2) return [...withE, ...without];
+
+  const energies = withE.map((t) => t.energy as number);
+  const lo = Math.min(...energies);
+  const hi = Math.max(...energies);
+  const peak = Math.floor((n - 1) / 2); // position of the arc's peak
+  const targetAt = (i: number): number => {
+    const frac = i <= peak ? (peak === 0 ? 1 : i / peak) : 1 - (i - peak) / (n - 1 - peak);
+    return lo + frac * (hi - lo);
+  };
+
+  const remaining = [...withE];
+  const result: Track[] = [];
+  for (let i = 0; i < n; i++) {
+    const target = targetAt(i);
+    const last = result.length ? result[result.length - 1] : null;
+    let bestIdx = 0;
+    let bestCost = Infinity;
+    for (let j = 0; j < remaining.length; j++) {
+      const cand = remaining[j];
+      const energyMiss = Math.abs((cand.energy as number) - target);
+      const trans = last ? transitionCost(last, cand) : 0;
+      const cost = trans + energyMiss * CURVE_ENERGY_WEIGHT;
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestIdx = j;
+      }
+    }
+    result.push(remaining.splice(bestIdx, 1)[0]);
+  }
+  return [...result, ...without];
+}
+
+export type SortStrategy = "smooth" | "curve" | "smoothCurve" | "bpm" | "energy" | "manual";
 
 export function applySort(tracks: Track[], strategy: SortStrategy): Track[] {
   switch (strategy) {
@@ -115,6 +164,8 @@ export function applySort(tracks: Track[], strategy: SortStrategy): Track[] {
       return smoothOrder(tracks);
     case "curve":
       return energyCurveOrder(tracks);
+    case "smoothCurve":
+      return smoothCurveOrder(tracks);
     case "bpm":
       return orderByNumber(tracks, (t) => t.bpm);
     case "energy":
