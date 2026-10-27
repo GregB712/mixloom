@@ -94,3 +94,23 @@ def test_track_field_options_endpoint(client):
     assert r.status_code == 200
     body = r.json()
     assert "genre" in body and "mood" in body
+
+
+def test_track_delete_endpoint(client):
+    import db
+    with db._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO tracks (spotify_uri, title, feature_source) "
+            "VALUES ('spotify:track:apidel', 'API Del', NULL) RETURNING id"
+        )
+        tid = cur.fetchone()[0]
+        conn.commit()
+    r = client.delete(f"/api/tracks/{tid}")
+    assert r.status_code == 200 and r.json()["trackId"] == tid
+    assert client.delete(f"/api/tracks/{tid}").status_code == 404
+
+
+def test_tracks_orphan_param(client):
+    r = client.get("/api/tracks", params={"orphan": "true", "limit": 200})
+    assert r.status_code == 200
+    assert "spotify:track:ddd" in {t["uri"] for t in r.json()["tracks"]}

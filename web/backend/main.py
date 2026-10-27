@@ -387,12 +387,13 @@ def tracks_similar(uri: str = Query(...), limit: int = Query(20, ge=1, le=100)):
 def tracks_list(
     playlistId: int | None = Query(None),
     missing: bool = Query(False),
+    orphan: bool = Query(False),
     q: str = Query(""),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ):
     """Tracks with their full editable metadata, for the metadata editor."""
-    result = db.list_tracks_detail(playlistId, missing, q, offset, limit)
+    result = db.list_tracks_detail(playlistId, missing, q, offset, limit, orphan_only=orphan)
     if result is None:
         raise HTTPException(404, "Playlist not found.")
     return result
@@ -412,6 +413,15 @@ class TrackUpdateBody(BaseModel):
 def track_update(track_id: int, body: TrackUpdateBody):
     """Apply hand edits to one track's metadata (null/empty clears a field)."""
     result = db.update_track_metadata(track_id, body.fields)
+    if result is None:
+        raise HTTPException(404, "Track not found.")
+    return result
+
+
+@app.delete("/api/tracks/{track_id}")
+def track_delete(track_id: int):
+    """Remove a single track from the library (does not touch Spotify)."""
+    result = db.delete_track(track_id)
     if result is None:
         raise HTTPException(404, "Track not found.")
     return result

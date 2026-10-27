@@ -447,6 +447,7 @@ table.data tr:hover td { background: var(--surface-hover); }
 .iconbtn:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
 .iconbtn:disabled { opacity: 0.4; cursor: not-allowed; }
 .iconbtn--on { color: var(--brand); }
+.iconbtn--danger:hover:not(:disabled) { color: #fff; background: var(--danger); }
 
 .volume { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .volume__slider { -webkit-appearance: none; appearance: none; width: 96px; height: 4px; border-radius: var(--radius-full); background: var(--surface-2); cursor: pointer; }

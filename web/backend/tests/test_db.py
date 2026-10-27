@@ -114,20 +114,17 @@ def test_set_spotify_playlist_id(test_db):
     assert row["spotifyPlaylistId"] == "SPNEW99"
 
 
-def test_delete_playlist_cleans_orphans(test_db):
-    # ddd is seeded into no playlist, so it is an orphan the cleanup should sweep.
-    assert "spotify:track:ddd" in db.tracks_by_uri(["spotify:track:ddd"])
-
+def test_delete_playlist_keeps_tracks(test_db):
     saved = db.save_curated("ToDelete", ["spotify:track:aaa", "spotify:track:bbb"])
     pid = saved["playlistId"]
     res = db.delete_playlist(pid)
     assert res is not None and res["name"] == "ToDelete"
     assert not any(p["id"] == pid for p in db.list_playlists())
 
-    # Shared tracks (still in Exported) survive; the orphaned ddd is removed.
-    assert "spotify:track:aaa" in db.tracks_by_uri(["spotify:track:aaa"])
-    assert db.tracks_by_uri(["spotify:track:ddd"]) == {}
-    assert res["removedTracks"] >= 1
+    # The tracks are kept in the library — deleting a playlist never drops them,
+    # even if that leaves them in no other playlist.
+    kept = db.tracks_by_uri(["spotify:track:aaa", "spotify:track:bbb"])
+    assert "spotify:track:aaa" in kept and "spotify:track:bbb" in kept
 
     assert db.delete_playlist(999999) is None
 
@@ -210,3 +207,20 @@ def test_track_field_options(test_db):
     opts = db.track_field_options()
     assert set(opts) == {"genre", "mood"}
     assert isinstance(opts["genre"], list) and isinstance(opts["mood"], list)
+
+
+def test_delete_track_removes_only_that_track(test_db):
+    tid = _insert_bare_track("spotify:track:deltrk", "Temp Track")
+    res = db.delete_track(tid)
+    assert res is not None and res["title"] == "Temp Track"
+    assert db.list_tracks_detail(None, False, "temp track", 0, 50)["tracks"] == []
+    assert db.delete_track(tid) is None  # already gone
+
+
+def test_orphan_filter(test_db):
+    # ddd is seeded into no playlist, so it is an orphan; aaa is in Exported.
+    page = db.list_tracks_detail(None, False, "", 0, 200, orphan_only=True)
+    assert page is not None
+    uris = {t["uri"] for t in page["tracks"]}
+    assert "spotify:track:ddd" in uris
+    assert "spotify:track:aaa" not in uris

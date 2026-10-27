@@ -149,13 +149,12 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
       if (selected === res.playlistId) setSelected(null);
       qc.invalidateQueries({ queryKey: ["playlists"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
-      const extra = res.removedTracks ? ` (${res.removedTracks} orphaned track${res.removedTracks === 1 ? "" : "s"} removed)` : "";
-      toast.notify(`Deleted "${res.name}"${extra}.`, "ok");
+      toast.notify(`Deleted "${res.name}". Its tracks are kept in the library.`, "ok");
     },
     onError: (e: Error) => toast.notify(e.message, "danger"),
   });
   const confirmDelete = (pl: PlaylistInfo) => {
-    if (window.confirm(`Delete "${pl.name}" from the database? This removes it from Mixloom only — your Spotify account is not affected.`)) {
+    if (window.confirm(`Delete "${pl.name}" from the database? Its tracks stay in your library; this removes it from Mixloom only — your Spotify account is not affected.`)) {
       deleteMut.mutate(pl.id);
     }
   };

@@ -219,9 +219,7 @@ export const api = {
   updatePlaylistTracks: (id: number, uris: string[]) =>
     put<{ playlistId: number; count: number }>(`/api/playlists/${id}/tracks`, { uris }),
   deletePlaylist: (id: number) =>
-    del<{ playlistId: number; name: string; removedTracks: number; removedArtists: number }>(
-      `/api/playlists/${id}`,
-    ),
+    del<{ playlistId: number; name: string }>(`/api/playlists/${id}`),
   stats: (playlistId: number | null) =>
     get<FileStats>(`/api/stats${playlistId != null ? `?playlistId=${playlistId}` : ""}`),
   rows: (playlistId: number | null, offset: number, limit: number, q: string) =>
@@ -230,13 +228,21 @@ export const api = {
         (playlistId != null ? `&playlistId=${playlistId}` : ""),
     ),
 
-  tracksDetail: (playlistId: number | null, missing: boolean, q: string, offset: number, limit: number) =>
+  tracksDetail: (
+    playlistId: number | null,
+    missing: boolean,
+    orphan: boolean,
+    q: string,
+    offset: number,
+    limit: number,
+  ) =>
     get<TracksDetailPage>(
-      `/api/tracks?offset=${offset}&limit=${limit}&missing=${missing}&q=${encodeURIComponent(q)}` +
+      `/api/tracks?offset=${offset}&limit=${limit}&missing=${missing}&orphan=${orphan}&q=${encodeURIComponent(q)}` +
         (playlistId != null ? `&playlistId=${playlistId}` : ""),
     ),
   updateTrack: (id: number, fields: Record<string, string | number | null>) =>
     put<TrackDetail>(`/api/tracks/${id}`, { fields }),
+  deleteTrack: (id: number) => del<{ trackId: number; title: string }>(`/api/tracks/${id}`),
   trackFieldOptions: () => get<{ genre: string[]; mood: string[] }>("/api/tracks/field-options"),
 
   similar: (uri: string, limit = 20) =>
