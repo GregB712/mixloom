@@ -28,6 +28,7 @@ const SORT_OPTIONS = [
   { value: "smooth", label: "Smooth transitions (key + tempo + energy)" },
   { value: "curve", label: "Energy curve (warm-up → peak → cool-down)" },
   { value: "smoothCurve", label: "Energy curve + smooth transitions" },
+  { value: "smoothDance", label: "Danceability ramp + smooth transitions" },
   { value: "bpm", label: "BPM ascending" },
   { value: "energy", label: "Energy ascending" },
   { value: "manual", label: "Selection order" },
