@@ -488,11 +488,11 @@ def tracks_by_uri(uris: list[str]) -> dict[str, dict]:
 
 
 def delete_playlist(playlist_id: int) -> dict | None:
-    """Delete a playlist (exported or curated) from the database. Its
-    playlist_tracks links go via cascade; tracks that are left in no playlist
-    (and artists left on no track) are then cleaned up, so the shared library
-    doesn't accumulate orphans. Tracks still used by another playlist are kept.
-    Returns None if the playlist does not exist."""
+    """Delete a playlist (exported or curated) from the database. Only the
+    playlist and its playlist_tracks membership links go (via cascade); the
+    tracks themselves — with their features — are kept in the shared library,
+    even if this leaves them in no playlist. Returns None if the playlist does
+    not exist."""
     with _connect() as conn:
         with conn.cursor() as cur:
             row = cur.execute(
@@ -502,21 +502,24 @@ def delete_playlist(playlist_id: int) -> dict | None:
                 return None
             name = row[0]
             cur.execute("DELETE FROM playlists WHERE id = %s", (playlist_id,))
-            removed_tracks = cur.execute(
-                "DELETE FROM tracks WHERE id NOT IN "
-                "(SELECT track_id FROM playlist_tracks) RETURNING id"
-            ).rowcount
-            removed_artists = cur.execute(
-                "DELETE FROM artists WHERE id NOT IN "
-                "(SELECT artist_id FROM track_artists) RETURNING id"
-            ).rowcount
         conn.commit()
-    return {
-        "playlistId": playlist_id,
-        "name": name,
-        "removedTracks": removed_tracks,
-        "removedArtists": removed_artists,
-    }
+    return {"playlistId": playlist_id, "name": name}
+
+
+def delete_track(track_id: int) -> dict | None:
+    """Delete a single track from the library. Its playlist memberships and
+    artist links go via cascade; artists are left in place. Returns the deleted
+    track's title, or None if it does not exist."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            row = cur.execute(
+                "SELECT title FROM tracks WHERE id = %s", (track_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            cur.execute("DELETE FROM tracks WHERE id = %s", (track_id,))
+        conn.commit()
+    return {"trackId": track_id, "title": row[0]}
 
 
 def set_spotify_playlist_id(playlist_id: int, spotify_playlist_id: str) -> None:
@@ -599,10 +602,12 @@ def _detail_from_row(row: tuple) -> dict:
 
 
 def list_tracks_detail(playlist_id: int | None, missing_only: bool,
-                       query: str, offset: int, limit: int) -> dict | None:
+                       query: str, offset: int, limit: int,
+                       orphan_only: bool = False) -> dict | None:
     """Paginated tracks with their full editable metadata, scoped to the whole
     library (playlist_id=None) or one playlist. Returns None if the playlist
-    does not exist. `missing_only` keeps rows lacking any core field."""
+    does not exist. `missing_only` keeps rows lacking any core field;
+    `orphan_only` keeps rows that belong to no playlist."""
     with _connect() as conn:
         ids = _scope_ids(conn, playlist_id)
         if ids is None:
@@ -616,6 +621,8 @@ def list_tracks_detail(playlist_id: int | None, missing_only: bool,
         if missing_only:
             conds = " OR ".join(f"t.{c} IS NULL" for c in CORE_FIELDS)
             where.append(f"({conds})")
+        if orphan_only:
+            where.append("NOT EXISTS (SELECT 1 FROM playlist_tracks pt WHERE pt.track_id = t.id)")
         clause = " AND ".join(where)
         total = conn.execute(f"SELECT count(*) FROM tracks t WHERE {clause}", params).fetchone()[0]
         rows = conn.execute(

@@ -15,18 +15,44 @@ const LIMIT = 50;
 // backend CORE_FIELDS); their human labels are reused in the editor.
 const CORE_FIELDS = ["bpm", "key", "camelot", "energy", "danceability", "valence", "genre", "mood"];
 
-// Canonical dropdown lists. Key uses the enrichment pipeline's enharmonic
-// spelling (sharps for C#/F#, flats for Bb/Eb/Ab); Camelot is the full wheel.
-const KEY_ROOTS = ["A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab"];
-const KEY_OPTIONS = KEY_ROOTS.flatMap((r) => [`${r}-Major`, `${r}-Minor`]);
-const CAMELOT_OPTIONS = Array.from({ length: 12 }, (_, i) => i + 1).flatMap((n) => [`${n}A`, `${n}B`]);
+// Canonical dropdown lists. Keys use the enrichment pipeline's enharmonic
+// spelling (sharps for C#/F#, flats for Bb/Eb/Ab); every one of the 24 keys is
+// offered. The option shows the short abbreviation (major = root, minor =
+// root+"m") but stores the long form the rest of the library uses, e.g. "C#m"
+// is saved as "C#-Minor". Camelot is the full wheel.
+type Opt = { value: string; label: string };
+// Each root stores one canonical spelling (what the pipeline writes) but is
+// labelled with both enharmonic names for the black keys, so sharps like G#
+// are visible even though the value is kept as Ab.
+const KEY_ROOTS: { value: string; abbr: string }[] = [
+  { value: "A", abbr: "A" },
+  { value: "Bb", abbr: "Bb/A#" },
+  { value: "B", abbr: "B" },
+  { value: "C", abbr: "C" },
+  { value: "C#", abbr: "C#/Db" },
+  { value: "D", abbr: "D" },
+  { value: "Eb", abbr: "Eb/D#" },
+  { value: "E", abbr: "E" },
+  { value: "F", abbr: "F" },
+  { value: "F#", abbr: "F#/Gb" },
+  { value: "G", abbr: "G" },
+  { value: "Ab", abbr: "Ab/G#" },
+];
+const KEY_OPTIONS: Opt[] = KEY_ROOTS.flatMap((r) => [
+  { value: `${r.value}-Major`, label: r.abbr },
+  { value: `${r.value}-Minor`, label: r.abbr.split("/").map((s) => `${s}m`).join("/") },
+]);
+const CAMELOT_OPTIONS: Opt[] = Array.from({ length: 12 }, (_, i) => i + 1).flatMap((n) => [
+  { value: `${n}A`, label: `${n}A` },
+  { value: `${n}B`, label: `${n}B` },
+]);
 
 type Control = "text" | "number" | "select" | "combo";
 type FieldDef = {
   col: string;
   label: string;
   control: Control;
-  options?: string[]; // for "select"
+  options?: Opt[]; // for "select"
   comboKey?: "genre" | "mood"; // for "combo" (suggestions from the DB)
 };
 const FIELD_GROUPS: { title: string; fields: FieldDef[] }[] = [
@@ -78,12 +104,49 @@ const FIELD_GROUPS: { title: string; fields: FieldDef[] }[] = [
 
 type FieldOptions = { genre: string[]; mood: string[] };
 
+// Flat lookup from column name to its definition (label + control type).
+const FIELD_BY_COL: Record<string, FieldDef> = Object.fromEntries(
+  FIELD_GROUPS.flatMap((g) => g.fields).map((f) => [f.col, f]),
+);
+
+// Expected data type and scale for each numeric field, shown as an input
+// placeholder and in the "copy missing values" text.
+const NUMERIC_SPEC: Record<string, { type: "float" | "integer"; range: string }> = {
+  bpm: { type: "float", range: "~40–250" },
+  bpm_confidence: { type: "float", range: "0–1" },
+  key_confidence: { type: "float", range: "0–1" },
+  energy: { type: "float", range: "0–1" },
+  loudness_db: { type: "float", range: "~ -60–0 dB" },
+  danceability: { type: "float", range: "0–1" },
+  valence: { type: "float", range: "0–1" },
+  speechiness: { type: "float", range: "0–1" },
+  instrumentalness: { type: "float", range: "0–1" },
+  liveness: { type: "float", range: "0–1" },
+  acousticness: { type: "float", range: "0–1" },
+  duration_ms: { type: "integer", range: "milliseconds" },
+  mode: { type: "integer", range: "0 or 1" },
+  time_signature: { type: "integer", range: "3–7" },
+};
+
+// A column's human-facing type + scale, for the "copy missing values" text.
+function fieldTypeLabel(col: string): string {
+  const spec = NUMERIC_SPEC[col];
+  return spec ? `${spec.type}, ${spec.range}` : "text";
+}
+
+// open.spotify.com link for a track URI, or "" if it isn't a track URI.
+function spotifyTrackUrl(uri: string | null): string {
+  const prefix = "spotify:track:";
+  return uri?.startsWith(prefix) ? `https://open.spotify.com/track/${uri.slice(prefix.length)}` : "";
+}
+
 export function Metadata() {
   const qc = useQueryClient();
   const toast = useToast();
 
   const [playlistSel, setPlaylistSel] = useState("all");
   const [missingOnly, setMissingOnly] = useState(false);
+  const [orphanOnly, setOrphanOnly] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
@@ -96,16 +159,18 @@ export function Metadata() {
   }, [searchInput]);
 
   // Any filter change resets to the first page.
-  useEffect(() => setOffset(0), [playlistSel, missingOnly, search]);
+  useEffect(() => setOffset(0), [playlistSel, missingOnly, orphanOnly, search]);
 
   const playlists = useQuery({ queryKey: ["playlists"], queryFn: api.playlists });
   const fieldOptions = useQuery({ queryKey: ["trackFieldOptions"], queryFn: api.trackFieldOptions });
   const options: FieldOptions = fieldOptions.data ?? { genre: [], mood: [] };
   const playlistId = playlistSel === "all" ? null : Number(playlistSel);
+  // "Not in any playlist" only makes sense across the whole library.
+  const orphan = orphanOnly && playlistId === null;
 
   const tracks = useQuery({
-    queryKey: ["tracksDetail", playlistId, missingOnly, search, offset],
-    queryFn: () => api.tracksDetail(playlistId, missingOnly, search, offset, LIMIT),
+    queryKey: ["tracksDetail", playlistId, missingOnly, orphan, search, offset],
+    queryFn: () => api.tracksDetail(playlistId, missingOnly, orphan, search, offset, LIMIT),
     placeholderData: keepPreviousData,
   });
 
@@ -121,6 +186,24 @@ export function Metadata() {
     },
     onError: (e: Error) => toast.notify(e.message, "danger"),
   });
+
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => api.deleteTrack(id),
+    onSuccess: (res) => {
+      toast.notify(`Deleted "${res.title}" from the library.`);
+      if (selected?.id === res.trackId) setSelected(null);
+      qc.invalidateQueries({ queryKey: ["tracksDetail"] });
+      qc.invalidateQueries({ queryKey: ["libraryHealth"] });
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+    },
+    onError: (e: Error) => toast.notify(e.message, "danger"),
+  });
+
+  const confirmDelete = (t: TrackDetail) => {
+    if (window.confirm(`Delete "${t.title}" from the library? This cannot be undone and does not touch Spotify.`)) {
+      deleteMut.mutate(t.id);
+    }
+  };
 
   const playlistOptions = useMemo(
     () => [
@@ -169,6 +252,16 @@ export function Metadata() {
             >
               {missingOnly ? "✓ " : ""}Only missing metadata
             </Button>
+            <Button
+              variant={orphan ? "primary" : "secondary"}
+              size="sm"
+              aria-pressed={orphan}
+              disabled={playlistId !== null}
+              title={playlistId !== null ? "Switch Scope to “All tracks” to use this filter" : undefined}
+              onClick={() => setOrphanOnly((v) => !v)}
+            >
+              {orphan ? "✓ " : ""}Not in any playlist
+            </Button>
           </div>
         </CardBody>
       </Card>
@@ -189,6 +282,7 @@ export function Metadata() {
                       <th>Album</th>
                       <th>Source</th>
                       <th>Metadata</th>
+                      <th style={{ width: 44 }} aria-label="Delete" />
                     </tr>
                   </thead>
                   <tbody>
@@ -213,12 +307,30 @@ export function Metadata() {
                             </span>
                           )}
                         </td>
+                        <td>
+                          <button
+                            className="iconbtn iconbtn--danger"
+                            title="Delete track from the library"
+                            aria-label={`Delete ${t.title}`}
+                            disabled={deleteMut.isPending}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              confirmDelete(t);
+                            }}
+                          >
+                            🗑
+                          </button>
+                        </td>
                       </tr>
                     ))}
                     {rows.length === 0 && !tracks.isLoading && (
                       <tr>
-                        <td colSpan={6} className="muted" style={{ textAlign: "center", padding: "var(--space-5)" }}>
-                          {missingOnly ? "No tracks with missing metadata in this scope." : "No tracks found."}
+                        <td colSpan={7} className="muted" style={{ textAlign: "center", padding: "var(--space-5)" }}>
+                          {orphan
+                            ? "No orphan tracks — every track belongs to a playlist."
+                            : missingOnly
+                              ? "No tracks with missing metadata in this scope."
+                              : "No tracks found."}
                         </td>
                       </tr>
                     )}
@@ -278,8 +390,27 @@ function TrackEditor({
     return m;
   }, [track]);
   const [values, setValues] = useState<Record<string, string>>(initial);
+  const toast = useToast();
 
   const set = (col: string, v: string) => setValues((prev) => ({ ...prev, [col]: v }));
+
+  // Copy a plain-text summary of what's still missing (with each field's data
+  // type) plus the song name and Spotify link, e.g. to look the values up.
+  const copyMissing = async () => {
+    const missing = CORE_FIELDS.filter((c) => (values[c] ?? "").trim() === "");
+    const url = spotifyTrackUrl(track.uri);
+    const lines = missing.map((c) => `- ${FIELD_BY_COL[c]?.label ?? c} (${fieldTypeLabel(c)})`);
+    const text =
+      `Song: ${track.title || "Untitled"}${track.artists ? ` — ${track.artists}` : ""}\n` +
+      `Spotify: ${url || "n/a"}\n` +
+      `Missing values:\n${lines.length ? lines.join("\n") : "- none"}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.notify(missing.length ? `Copied ${missing.length} missing field(s).` : "Copied (nothing missing).");
+    } catch {
+      toast.notify("Could not copy to the clipboard.", "danger");
+    }
+  };
 
   const save = () => {
     const patch: Record<string, string | null> = {};
@@ -305,6 +436,9 @@ function TrackEditor({
       onClose={onCancel}
       footer={
         <>
+          <Button variant="ghost" size="sm" style={{ marginRight: "auto" }} onClick={copyMissing}>
+            ⧉ Copy missing values
+          </Button>
           <Button variant="secondary" onClick={onCancel}>Cancel</Button>
           <Button onClick={save} loading={saving}>Save</Button>
         </>
@@ -332,9 +466,11 @@ function TrackEditor({
                     >
                       <option value="">— none —</option>
                       {/* keep an unexpected existing value selectable */}
-                      {cur !== "" && !(f.options ?? []).includes(cur) && <option value={cur}>{cur}</option>}
+                      {cur !== "" && !(f.options ?? []).some((o) => o.value === cur) && (
+                        <option value={cur}>{cur}</option>
+                      )}
                       {(f.options ?? []).map((o) => (
-                        <option key={o} value={o}>{o}</option>
+                        <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
                     </select>
                   ) : f.control === "combo" ? (
@@ -359,6 +495,7 @@ function TrackEditor({
                       className="input"
                       type={f.control === "number" ? "number" : "text"}
                       step={f.control === "number" ? "any" : undefined}
+                      placeholder={NUMERIC_SPEC[f.col]?.range}
                       value={cur}
                       onChange={(e) => set(f.col, e.target.value)}
                     />
