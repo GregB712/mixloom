@@ -7,6 +7,7 @@ import {
   mixQuality,
   parseCamelot,
   smoothCurveOrder,
+  smoothDanceOrder,
   totalDurationMs,
   vibeGroups,
 } from "./curate";
@@ -96,7 +97,7 @@ describe("applySort", () => {
     expect(applySort(tracks, "manual").map((t) => t.uri)).toEqual(["a", "b", "c"]);
   });
   it("does not drop or duplicate tracks under any strategy", () => {
-    for (const s of ["smooth", "curve", "smoothCurve", "bpm", "energy", "manual"] as const) {
+    for (const s of ["smooth", "curve", "smoothCurve", "smoothDance", "bpm", "energy", "manual"] as const) {
       const out = applySort(tracks, s);
       expect(new Set(out.map((t) => t.uri))).toEqual(new Set(["a", "b", "c"]));
       expect(out).toHaveLength(3);
@@ -151,6 +152,33 @@ describe("smoothCurveOrder", () => {
       track({ uri: "x", energy: null }),
     ];
     const out = smoothCurveOrder(tracks);
+    expect(out[out.length - 1].uri).toBe("x");
+  });
+});
+
+describe("smoothDanceOrder", () => {
+  it("ramps danceability upward, ending on the most danceable, keeping every track", () => {
+    const tracks = [0.2, 0.9, 0.5, 0.3, 0.7, 0.1, 0.6].map((d, i) =>
+      track({ uri: `t${i}`, danceability: d, bpm: 120 + d * 20, camelot: "8A", energy: d }),
+    );
+    const out = smoothDanceOrder(tracks);
+    expect(new Set(out.map((t) => t.uri)).size).toBe(tracks.length);
+    const dances = out.map((t) => t.danceability as number);
+    const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const third = Math.floor(dances.length / 3);
+    const first = avg(dances.slice(0, third));
+    const last = avg(dances.slice(dances.length - third));
+    expect(last).toBeGreaterThan(first); // builds from less to more danceable
+    expect(dances[dances.length - 1]).toBe(Math.max(...dances)); // peak sits at the end
+  });
+  it("keeps tracks without danceability at the end", () => {
+    const tracks = [
+      track({ uri: "a", danceability: 0.4 }),
+      track({ uri: "b", danceability: 0.8 }),
+      track({ uri: "c", danceability: 0.2 }),
+      track({ uri: "x", danceability: null }),
+    ];
+    const out = smoothDanceOrder(tracks);
     expect(out[out.length - 1].uri).toBe("x");
   });
 });

@@ -156,7 +156,52 @@ export function smoothCurveOrder(tracks: Track[]): Track[] {
   return [...result, ...without];
 }
 
-export type SortStrategy = "smooth" | "curve" | "smoothCurve" | "bpm" | "energy" | "manual";
+// How hard the ordering pulls toward the rising danceability ramp, relative to
+// the transition cost. Mirrors CURVE_ENERGY_WEIGHT: it must outweigh the
+// transition term enough that the floor-to-peak dance progression actually
+// forms, while transition cost smooths the ordering among dance-similar tracks.
+const RAMP_DANCE_WEIGHT = 8;
+
+// Combine smooth transitions with a rising danceability ramp: walk a target
+// that climbs linearly from the least to the most danceable track and, at each
+// step, pick the remaining track that best balances a smooth transition from
+// the previous track against closeness to the ramp's target danceability. The
+// set therefore starts on the least danceable tracks and builds to the most
+// danceable at the end. Tracks without a danceability value trail at the end.
+export function smoothDanceOrder(tracks: Track[]): Track[] {
+  const withD = tracks.filter((t) => t.danceability !== null);
+  const without = tracks.filter((t) => t.danceability === null);
+  const n = withD.length;
+  if (n <= 2) return [...withD, ...without];
+
+  const dances = withD.map((t) => t.danceability as number);
+  const lo = Math.min(...dances);
+  const hi = Math.max(...dances);
+  const targetAt = (i: number): number => lo + (i / (n - 1)) * (hi - lo);
+
+  const remaining = [...withD];
+  const result: Track[] = [];
+  for (let i = 0; i < n; i++) {
+    const target = targetAt(i);
+    const last = result.length ? result[result.length - 1] : null;
+    let bestIdx = 0;
+    let bestCost = Infinity;
+    for (let j = 0; j < remaining.length; j++) {
+      const cand = remaining[j];
+      const danceMiss = Math.abs((cand.danceability as number) - target);
+      const trans = last ? transitionCost(last, cand) : 0;
+      const cost = trans + danceMiss * RAMP_DANCE_WEIGHT;
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestIdx = j;
+      }
+    }
+    result.push(remaining.splice(bestIdx, 1)[0]);
+  }
+  return [...result, ...without];
+}
+
+export type SortStrategy = "smooth" | "curve" | "smoothCurve" | "smoothDance" | "bpm" | "energy" | "manual";
 
 export function applySort(tracks: Track[], strategy: SortStrategy): Track[] {
   switch (strategy) {
@@ -166,6 +211,8 @@ export function applySort(tracks: Track[], strategy: SortStrategy): Track[] {
       return energyCurveOrder(tracks);
     case "smoothCurve":
       return smoothCurveOrder(tracks);
+    case "smoothDance":
+      return smoothDanceOrder(tracks);
     case "bpm":
       return orderByNumber(tracks, (t) => t.bpm);
     case "energy":
