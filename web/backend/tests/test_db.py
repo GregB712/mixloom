@@ -224,3 +224,28 @@ def test_orphan_filter(test_db):
     uris = {t["uri"] for t in page["tracks"]}
     assert "spotify:track:ddd" in uris
     assert "spotify:track:aaa" not in uris
+
+
+def test_import_track_updates(test_db):
+    tid = _insert_bare_track("spotify:track:imp1", "Import One")
+    tid2 = _insert_bare_track("spotify:track:imp2", "Import Two")
+    try:
+        res = db.import_track_updates([
+            {"id": tid, "bpm": "120", "genre": "house"},
+            {"uri": "spotify:track:imp2", "key": "A-Minor"},  # matched by uri
+            {"id": tid, "bpm": "", "genre": ""},               # all empty -> skipped
+            {"id": 99999999, "bpm": "100"},                    # unknown id
+            {"uri": "spotify:track:nope", "bpm": "100"},        # unknown uri
+        ])
+        assert res["updated"] == 2
+        assert res["skipped"] == 1
+        assert res["notFound"] == 2
+
+        page = db.list_tracks_detail(None, False, "import one", 0, 10)
+        hit = next(t for t in page["tracks"] if t["id"] == tid)
+        assert hit["fields"]["bpm"] == 120.0 and hit["fields"]["genre"] == "house"
+        # Filling features on a previously unsourced track records a manual source.
+        assert hit["featureSource"] == "manual"
+    finally:
+        _delete_track(tid)
+        _delete_track(tid2)
