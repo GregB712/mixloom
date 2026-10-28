@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type TrackDetail } from "../api/client";
 import { Badge } from "../components/ui/Badge";
@@ -140,6 +140,56 @@ function spotifyTrackUrl(uri: string | null): string {
   return uri?.startsWith(prefix) ? `https://open.spotify.com/track/${uri.slice(prefix.length)}` : "";
 }
 
+// Plain-text report for one track: name, Spotify link, and its missing fields
+// (each with the expected data type + scale). Shared by the per-track modal
+// button and the "copy all visible tracks" button so both read identically.
+function trackReport(title: string, artists: string, uri: string | null, missingCols: string[]): string {
+  const lines = missingCols.map((c) => `- ${FIELD_BY_COL[c]?.label ?? c} (${fieldTypeLabel(c)})`);
+  return (
+    `Song: ${title || "Untitled"}${artists ? ` — ${artists}` : ""}\n` +
+    `Spotify: ${spotifyTrackUrl(uri) || "n/a"}\n` +
+    `Missing values:\n${lines.length ? lines.join("\n") : "- none"}`
+  );
+}
+
+// Export/import columns. Identity columns identify the track on re-upload
+// (matching on `id`, falling back to `uri`); the CORE_FIELDS are the fillable
+// ones (blank = missing). title/artists/spotify_url are reference only.
+const EXPORT_IDENTITY = ["id", "uri", "spotify_url", "title", "artists"];
+const EXPORT_COLUMNS = [...EXPORT_IDENTITY, ...CORE_FIELDS];
+
+function exportRow(t: TrackDetail): Record<string, string | number | null> {
+  const row: Record<string, string | number | null> = {
+    id: t.id,
+    uri: t.uri,
+    spotify_url: spotifyTrackUrl(t.uri),
+    title: t.title,
+    artists: t.artists,
+  };
+  for (const c of CORE_FIELDS) row[c] = t.fields[c] ?? null;
+  return row;
+}
+
+// Minimal RFC-4180 CSV: quote any field with a comma, quote or newline.
+function toCsv(rows: Record<string, string | number | null>[], columns: string[]): string {
+  const esc = (v: string | number | null) => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = columns.join(",");
+  const body = rows.map((r) => columns.map((c) => esc(r[c])).join(",")).join("\n");
+  return `${header}\n${body}\n`;
+}
+
+function downloadFile(name: string, text: string, mime: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export function Metadata() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -222,6 +272,57 @@ export function Metadata() {
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + LIMIT, total);
 
+  // Fetch every track matching the current filters (across all pages), so a
+  // download covers the whole filtered set, not just the visible page.
+  const fetchAllMatching = async (): Promise<TrackDetail[]> => {
+    const PAGE = 200;
+    const first = await api.tracksDetail(playlistId, missingOnly, orphan, search, 0, PAGE);
+    const all = [...first.tracks];
+    for (let off = PAGE; off < first.total; off += PAGE) {
+      const next = await api.tracksDetail(playlistId, missingOnly, orphan, search, off, PAGE);
+      all.push(...next.tracks);
+    }
+    return all;
+  };
+
+  const [exporting, setExporting] = useState(false);
+  const download = async (format: "json" | "csv") => {
+    setExporting(true);
+    try {
+      const data = (await fetchAllMatching()).map(exportRow);
+      const text = format === "json" ? JSON.stringify(data, null, 2) : toCsv(data, EXPORT_COLUMNS);
+      downloadFile(`mixloom-tracks.${format}`, text, format === "json" ? "application/json" : "text/csv");
+      toast.notify(`Downloaded ${data.length} track${data.length === 1 ? "" : "s"} as ${format.toUpperCase()}.`);
+    } catch (e) {
+      toast.notify((e as Error).message || "Download failed.", "danger");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const importMut = useMutation({
+    mutationFn: ({ filename, content }: { filename: string; content: string }) =>
+      api.importTracks(filename, content),
+    onSuccess: (res) => {
+      toast.notify(`Imported: ${res.updated} updated, ${res.skipped} unchanged, ${res.notFound} not matched.`);
+      qc.invalidateQueries({ queryKey: ["tracksDetail"] });
+      qc.invalidateQueries({ queryKey: ["libraryHealth"] });
+      qc.invalidateQueries({ queryKey: ["trackFieldOptions"] });
+    },
+    onError: (e: Error) => toast.notify(e.message, "danger"),
+  });
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const onImportFile = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the same file be chosen again later
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => importMut.mutate({ filename: file.name, content: String(reader.result ?? "") });
+    reader.onerror = () => toast.notify("Could not read the file.", "danger");
+    reader.readAsText(file);
+  };
+
   return (
     <div className="stack">
       <Card>
@@ -272,6 +373,24 @@ export function Metadata() {
             <p className="muted small">Could not load tracks: {(tracks.error as Error).message}</p>
           ) : (
             <div className="stack" style={{ gap: "var(--space-3)" }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "var(--space-2)", flexWrap: "wrap" }}>
+                <Button variant="secondary" size="sm" disabled={total === 0 || exporting} loading={exporting} onClick={() => download("json")}>
+                  ↓ Download JSON
+                </Button>
+                <Button variant="secondary" size="sm" disabled={total === 0 || exporting} loading={exporting} onClick={() => download("csv")}>
+                  ↓ Download CSV
+                </Button>
+                <Button variant="secondary" size="sm" loading={importMut.isPending} onClick={() => fileInputRef.current?.click()}>
+                  ↑ Import filled file
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json,.csv,application/json,text/csv"
+                  style={{ display: "none" }}
+                  onChange={onImportFile}
+                />
+              </div>
               <div className="tablewrap">
                 <table className="data">
                   <thead>
@@ -398,14 +517,8 @@ function TrackEditor({
   // type) plus the song name and Spotify link, e.g. to look the values up.
   const copyMissing = async () => {
     const missing = CORE_FIELDS.filter((c) => (values[c] ?? "").trim() === "");
-    const url = spotifyTrackUrl(track.uri);
-    const lines = missing.map((c) => `- ${FIELD_BY_COL[c]?.label ?? c} (${fieldTypeLabel(c)})`);
-    const text =
-      `Song: ${track.title || "Untitled"}${track.artists ? ` — ${track.artists}` : ""}\n` +
-      `Spotify: ${url || "n/a"}\n` +
-      `Missing values:\n${lines.length ? lines.join("\n") : "- none"}`;
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(trackReport(track.title, track.artists, track.uri, missing));
       toast.notify(missing.length ? `Copied ${missing.length} missing field(s).` : "Copied (nothing missing).");
     } catch {
       toast.notify("Could not copy to the clipboard.", "danger");

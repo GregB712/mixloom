@@ -427,6 +427,42 @@ def track_delete(track_id: int):
     return result
 
 
+class TrackImportBody(BaseModel):
+    filename: str = ""
+    content: str
+
+
+def _parse_import_rows(content: str, filename: str) -> list[dict] | None:
+    """Parse an uploaded export (JSON array or CSV) into a list of row dicts."""
+    text = content.strip()
+    as_json = filename.lower().endswith(".json") or text[:1] in "[{"
+    if as_json:
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, dict):
+            data = data.get("tracks", [])
+        if not isinstance(data, list):
+            return None
+        return [r for r in data if isinstance(r, dict)]
+    import csv
+    import io
+    try:
+        return [dict(r) for r in csv.DictReader(io.StringIO(content))]
+    except csv.Error:
+        return None
+
+
+@app.post("/api/tracks/import")
+def tracks_import(body: TrackImportBody):
+    """Apply a hand-filled JSON/CSV export back to the library's track metadata."""
+    rows = _parse_import_rows(body.content, body.filename)
+    if rows is None:
+        raise HTTPException(400, "Could not parse the file as JSON or CSV.")
+    return db.import_track_updates(rows)
+
+
 @app.get("/api/duplicates")
 def duplicates_endpoint():
     return db.duplicates()

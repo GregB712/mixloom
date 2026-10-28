@@ -243,6 +243,11 @@ export const api = {
   updateTrack: (id: number, fields: Record<string, string | number | null>) =>
     put<TrackDetail>(`/api/tracks/${id}`, { fields }),
   deleteTrack: (id: number) => del<{ trackId: number; title: string }>(`/api/tracks/${id}`),
+  importTracks: (filename: string, content: string) =>
+    post<{ total: number; updated: number; skipped: number; notFound: number }>(
+      "/api/tracks/import",
+      { filename, content },
+    ),
   trackFieldOptions: () => get<{ genre: string[]; mood: string[] }>("/api/tracks/field-options"),
 
   similar: (uri: string, limit = 20) =>

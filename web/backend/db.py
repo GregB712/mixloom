@@ -638,38 +638,84 @@ def list_tracks_detail(playlist_id: int | None, missing_only: bool,
     }
 
 
-def update_track_metadata(track_id: int, patch: dict) -> dict | None:
-    """Apply hand edits to one track's metadata. `patch` maps column name to a
-    new value (None/'' clears it); unknown columns are ignored and `title` is
-    never cleared (it is NOT NULL). If the track had no feature_source and the
-    edit fills any audio-feature column, the source is recorded as 'manual' so
-    the track counts in feature stats. Returns the refreshed detail, or None if
+def _apply_track_fields(cur, track_id: int, patch: dict) -> bool:
+    """Apply hand edits to one track using an open cursor. `patch` maps column
+    name to a new value (None/'' clears it); unknown columns are ignored and
+    `title` is never cleared (it is NOT NULL). If the track had no
+    feature_source and the edit fills any audio-feature column, the source is
+    recorded as 'manual' so the track counts in feature stats. Returns False if
     the track does not exist."""
-    cols = {k: v for k, v in patch.items() if k in EDITABLE_FIELDS}
+    cur.execute("SELECT feature_source FROM tracks WHERE id = %s", (track_id,))
+    row = cur.fetchone()
+    if row is None:
+        return False
+    set_vals = {c: _coerce_field(c, v) for c, v in patch.items() if c in EDITABLE_FIELDS}
+    if set_vals.get("title") is None:
+        set_vals.pop("title", None)  # title is NOT NULL; never clear it
+    if set_vals:
+        if row[0] is None and any(
+            set_vals.get(c) is not None for c in _FEATURE_EDITABLE if c in set_vals
+        ):
+            set_vals["feature_source"] = "manual"
+        assignments = ", ".join(f"{c} = %s" for c in set_vals)
+        cur.execute(
+            f"UPDATE tracks SET {assignments}, updated_at = now() WHERE id = %s",
+            [*set_vals.values(), track_id],
+        )
+    return True
+
+
+def update_track_metadata(track_id: int, patch: dict) -> dict | None:
+    """Apply hand edits to one track and return the refreshed detail, or None if
+    the track does not exist. See `_apply_track_fields` for the field rules."""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT feature_source FROM tracks WHERE id = %s", (track_id,))
-            row = cur.fetchone()
-            if row is None:
+            if not _apply_track_fields(cur, track_id, patch):
                 return None
-            set_vals = {c: _coerce_field(c, v) for c, v in cols.items()}
-            if set_vals.get("title") is None:
-                set_vals.pop("title", None)  # title is NOT NULL; never clear it
-            if set_vals:
-                if row[0] is None and any(
-                    set_vals.get(c) is not None for c in _FEATURE_EDITABLE if c in set_vals
-                ):
-                    set_vals["feature_source"] = "manual"
-                assignments = ", ".join(f"{c} = %s" for c in set_vals)
-                cur.execute(
-                    f"UPDATE tracks SET {assignments}, updated_at = now() WHERE id = %s",
-                    [*set_vals.values(), track_id],
-                )
             refreshed = cur.execute(
                 f"SELECT {_DETAIL_SELECT} FROM tracks t WHERE t.id = %s", (track_id,)
             ).fetchone()
         conn.commit()
     return _detail_from_row(refreshed)
+
+
+def _as_int(value) -> int | None:
+    try:
+        return int(float(str(value).strip())) if value is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+def import_track_updates(rows: list[dict]) -> dict:
+    """Apply hand-filled metadata in bulk (from an uploaded JSON/CSV). Each row
+    identifies a track by `id` (preferred) or `uri`, and carries core metadata
+    columns to set; only non-empty CORE_FIELDS values are applied. Returns a
+    summary of how many rows updated / were unchanged / matched no track."""
+    updated = skipped = not_found = 0
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for row in rows:
+                tid = _as_int(row.get("id"))
+                if tid is None:
+                    uri = str(row.get("uri") or "").strip()
+                    if uri:
+                        r = cur.execute(
+                            "SELECT id FROM tracks WHERE spotify_uri = %s", (uri,)
+                        ).fetchone()
+                        tid = r[0] if r else None
+                if tid is None:
+                    not_found += 1
+                    continue
+                cols = {c: row[c] for c in CORE_FIELDS if str(row.get(c) or "").strip() != ""}
+                if not cols:
+                    skipped += 1
+                    continue
+                if _apply_track_fields(cur, tid, cols):
+                    updated += 1
+                else:
+                    not_found += 1
+        conn.commit()
+    return {"total": len(rows), "updated": updated, "skipped": skipped, "notFound": not_found}
 
 
 def track_field_options() -> dict:

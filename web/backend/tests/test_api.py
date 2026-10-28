@@ -114,3 +114,32 @@ def test_tracks_orphan_param(client):
     r = client.get("/api/tracks", params={"orphan": "true", "limit": 200})
     assert r.status_code == 200
     assert "spotify:track:ddd" in {t["uri"] for t in r.json()["tracks"]}
+
+
+def test_tracks_import_endpoint(client):
+    import json
+
+    import db
+    with db._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO tracks (spotify_uri, title, feature_source) "
+            "VALUES ('spotify:track:impapi', 'Imp API', NULL) RETURNING id"
+        )
+        tid = cur.fetchone()[0]
+        conn.commit()
+    try:
+        r = client.post("/api/tracks/import", json={
+            "filename": "x.json",
+            "content": json.dumps([{"id": tid, "bpm": "128", "mood": "happy"}]),
+        })
+        assert r.status_code == 200 and r.json()["updated"] == 1
+
+        r2 = client.post("/api/tracks/import", json={"filename": "x.csv", "content": f"id,genre\n{tid},techno\n"})
+        assert r2.status_code == 200 and r2.json()["updated"] == 1
+
+        bad = client.post("/api/tracks/import", json={"filename": "x.json", "content": "not json"})
+        assert bad.status_code == 400
+    finally:
+        with db._connect() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM tracks WHERE id = %s", (tid,))
+            conn.commit()
