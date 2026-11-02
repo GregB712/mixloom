@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type AuthStatus, type EnvFlags, type PlayerTrack, type PlaylistInfo } from "../api/client";
 import { Button } from "../components/ui/Button";
@@ -8,6 +8,7 @@ import { Callout, EmptyState } from "../components/ui/EmptyState";
 import { LogPanel } from "../components/ui/LogPanel";
 import { TrackArt } from "../components/ui/TrackArt";
 import { useToast } from "../components/ui/Toast";
+import { useDragAutoScroll } from "../hooks/useDragAutoScroll";
 import { useJobStream } from "../hooks/useJobStream";
 import { usePlayback } from "../hooks/usePlayback";
 import { formatDuration } from "../lib/format";
@@ -330,9 +331,11 @@ function TrackList({
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const draggable = !!onMove;
+  const listRef = useRef<HTMLDivElement>(null);
+  useDragAutoScroll(listRef, dragIndex !== null);
 
   return (
-    <div className="stack" style={{ gap: 0 }}>
+    <div ref={listRef} className="stack" style={{ gap: 0 }}>
       <div className="row" style={{ justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
         <span className="small muted">{tracks.length} tracks</span>
         <div className="row" style={{ gap: "var(--space-2)" }}>
