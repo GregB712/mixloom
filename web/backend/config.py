@@ -20,7 +20,7 @@ WRITE_TOKEN_CACHE = ROOT / ".spotify_playlist_create_token_cache"
 PLAYER_TOKEN_CACHE = ROOT / ".spotify_player_token_cache"
 
 READ_SCOPES = "playlist-read-private playlist-read-collaborative"
-WRITE_SCOPES = "playlist-modify-private"
+WRITE_SCOPES = "playlist-modify-private playlist-modify-public"
 # streaming + the identity scopes the Web Playback SDK requires, plus the
 # playback-state scopes needed to start/transfer playback to the browser device.
 PLAYER_SCOPES = (

@@ -2,10 +2,11 @@
 """Create or update a private Spotify playlist from a playlist in the database.
 
 Reads the track URIs of a DB playlist (in order). By default it creates a fresh
-private playlist and records its Spotify id on the DB row. With --update, if the
-DB row already has a recorded Spotify playlist id, it replaces that playlist's
-tracks in place (no new playlist), falling back to creating one if the stored
-playlist is gone. Requires the SPOTIPY_* variables in .env.
+private playlist and records its Spotify id on the DB row. With --update, it
+replaces the tracks of the playlist's Spotify counterpart in place (no new
+playlist): the source playlist for an exported playlist, or the one recorded by
+an earlier push for a curated one. It falls back to creating a new playlist if
+there is no counterpart or it is gone. Requires the SPOTIPY_* variables in .env.
 
 Usage:
     python create_spotify_playlist.py <playlist_db_id> [new playlist name] [--update]
@@ -26,19 +27,24 @@ load_dotenv(ROOT / ".env")
 
 # Use a separate token cache so Spotify asks for the new write permission.
 TOKEN_CACHE = str(ROOT / ".spotify_playlist_create_token_cache")
-SCOPE = "playlist-modify-private"
+# Keep in sync with WRITE_SCOPES in web/backend/config.py (same token cache).
+SCOPE = "playlist-modify-private playlist-modify-public"
 BATCH_SIZE = 100
 
 
 def read_playlist(playlist_id: int) -> tuple[str, list[str], str | None]:
-    """Return (name, ordered track URIs, recorded Spotify playlist id) for a DB playlist."""
+    """Return (name, ordered track URIs, Spotify playlist id to update) for a DB
+    playlist. Exported playlists update their source; curated ones the playlist
+    an earlier push created."""
     with dbutil.connect() as conn:
         row = conn.execute(
-            "SELECT name, spotify_playlist_id FROM playlists WHERE id = %s", (playlist_id,)
+            "SELECT name, spotify_id, spotify_playlist_id FROM playlists WHERE id = %s",
+            (playlist_id,),
         ).fetchone()
         if not row:
             raise SystemExit(f"Playlist id {playlist_id} not found in the database.")
-        name, spotify_playlist_id = row
+        name, source_id, pushed_id = row
+        spotify_playlist_id = source_id or pushed_id
         uris = [
             r[0] for r in conn.execute(
                 """SELECT t.spotify_uri FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
@@ -158,6 +164,9 @@ def main():
         print(f"Spotify URL: {url}")
     except SpotifyException as exc:
         print(f"\nSpotify API error: HTTP {exc.http_status} - {exc.msg}")
+        if exc.http_status == 403:
+            print("You can only update playlists you own (or collaborate on). "
+                  "Push as a new playlist instead, or reconnect Spotify write access.")
         raise SystemExit(1) from exc
 
 

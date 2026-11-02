@@ -120,13 +120,14 @@ Each step reads from and writes to the shared Postgres database. Steps are
   just like an exported one.
 - Per-track and "play all" buttons with **album art**, and playback that continues
   while you switch tabs.
-- **Edit curated (database-only) playlists in place** — remove tracks, **drag to
+- **Edit any playlist in place**, exported or curated — remove tracks, **drag to
   reorder**, and **undo** — then save back to the database.
-- **Push a curated playlist to Spotify** (needs write access) either as a new
-  private playlist or **updating the existing Spotify playlist in place**.
+- **Push to Spotify** (needs write access) either as a new private playlist or
+  **updating the existing Spotify playlist in place**: an exported playlist's
+  source playlist (you must own it or collaborate on it), or the playlist an
+  earlier push of a curated playlist created.
 - For **exported** playlists, **check for drift** against Spotify (tracks
-  added/removed since export) and **re-import** to reconcile. Exported playlists
-  are otherwise read-only here.
+  added/removed since export) and **re-import** to reconcile.
 
 ### Now-playing panel (every tab)
 - Playback is driven from a single floating now-playing panel that is available on

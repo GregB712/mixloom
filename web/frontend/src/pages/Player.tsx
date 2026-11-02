@@ -56,8 +56,6 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
 
   const list = playlists.data ?? [];
   const selectedPl = useMemo(() => list.find((p) => p.id === selected) ?? null, [list, selected]);
-  // Only playlists built here (curated, never exported) can be edited in place.
-  const editable = !!selectedPl?.curated;
 
   const tracks = useQuery({
     queryKey: ["playlistTracks", selected],
@@ -216,7 +214,7 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
               <p className="muted small">Loading tracks…</p>
             ) : displayTracks.length === 0 ? (
               <p className="muted small">
-                {editable && dirty
+                {dirty
                   ? "You removed every track. Add some back or pick another playlist."
                   : "This playlist has no playable tracks."}
               </p>
@@ -225,28 +223,34 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
                 tracks={displayTracks}
                 currentUri={pb.current?.uri ?? null}
                 onPlay={(i) => playFrom(displayTracks, i)}
-                onRemove={editable ? removeAt : undefined}
-                onMove={editable ? moveTrack : undefined}
+                onRemove={removeAt}
+                onMove={moveTrack}
                 headerRight={
-                  editable ? (
-                    <EditControls
-                      env={env}
-                      auth={auth}
-                      dirty={dirty}
-                      canSave={displayTracks.length > 0}
-                      canUndo={history.length > 0}
-                      hasSpotify={!!selectedPl?.spotifyPlaylistId}
-                      saving={saveMut.isPending}
-                      pushing={pushMut.isPending || (pushJobId !== null && !pushStream.done)}
-                      onUndo={undo}
-                      onSave={() => saveMut.mutate()}
-                      onPush={(update) => pushMut.mutate(update)}
-                    />
-                  ) : undefined
+                  <EditControls
+                    env={env}
+                    auth={auth}
+                    dirty={dirty}
+                    canSave={displayTracks.length > 0}
+                    canUndo={history.length > 0}
+                    // "Update Spotify" targets an exported playlist's source, or the
+                    // playlist an earlier push of a curated one created.
+                    hasSpotify={!!(selectedPl?.spotifyId || selectedPl?.spotifyPlaylistId)}
+                    saving={saveMut.isPending}
+                    pushing={pushMut.isPending || (pushJobId !== null && !pushStream.done)}
+                    onUndo={undo}
+                    onSave={() => saveMut.mutate()}
+                    onPush={(update) => {
+                      if (
+                        update && selectedPl?.spotifyId &&
+                        !window.confirm(`Replace the tracks of "${selectedPl.name}" on Spotify with this list? Any changes made on Spotify since the export are overwritten.`)
+                      ) return;
+                      pushMut.mutate(update);
+                    }}
+                  />
                 }
               />
             )}
-            {selected != null && selectedPl && !editable && selectedPl.spotifyId && (
+            {selected != null && selectedPl && selectedPl.spotifyId && (
               <ResyncPanel playlist={selectedPl} auth={auth} />
             )}
             {pushJobId && <LogPanel lines={pushStream.lines} status={pushStream.status} />}
@@ -391,7 +395,7 @@ function TrackList({
   );
 }
 
-// Edit/push controls shown only for curated (database-only) playlists.
+// Edit/push controls for the selected playlist.
 function EditControls({
   env,
   auth,

@@ -429,14 +429,13 @@ def save_curated(name: str, uris: list[str]) -> dict | None:
 
 
 def update_playlist_tracks(playlist_id: int, uris: list[str]) -> dict | None:
-    """Replace a curated playlist's tracks with the given ordered URIs (edit in
-    place). Returns None if the playlist does not exist, is not curated, or none
-    of the URIs resolve to a track."""
+    """Replace a playlist's tracks with the given ordered URIs (edit in place).
+    Returns None if the playlist does not exist or none of the URIs resolve to a
+    track."""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT curated FROM playlists WHERE id = %s", (playlist_id,))
-            row = cur.fetchone()
-            if row is None or not row[0]:
+            cur.execute("SELECT 1 FROM playlists WHERE id = %s", (playlist_id,))
+            if cur.fetchone() is None:
                 return None
             cur.execute(
                 "SELECT spotify_uri, id FROM tracks WHERE spotify_uri = ANY(%s)", (uris,)

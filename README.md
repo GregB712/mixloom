@@ -222,12 +222,13 @@ The frontend proxies `/api` to the backend, so you only open the frontend URL.
 - **Player** — connect Spotify (player scope, **Premium required**) and play your
   DB playlists — both exported and ones you curated — in the browser, with album
   art in every row. Per-track and "play all" buttons, and playback that keeps going
-  while you switch tabs. For **curated (database-only) playlists** you can **edit
-  them in place** — remove tracks, **drag to reorder**, and **undo** — then save
-  back to the database and **push to Spotify** (write access), either as a new
-  playlist or **updating the existing Spotify playlist in place**. For **exported**
-  playlists you can **check for drift** against Spotify (tracks added/removed since
-  export) and **re-import** to reconcile.
+  while you switch tabs. You can **edit any playlist in place**, exported or
+  curated — remove tracks, **drag to reorder**, and **undo** — then save back to
+  the database and **push to Spotify** (write access), either as a new playlist or
+  **updating the existing Spotify playlist in place** (for an exported playlist,
+  its source on Spotify, which you must own). For **exported** playlists you can
+  also **check for drift** against Spotify (tracks added/removed since export) and
+  **re-import** to reconcile.
 
 Playback is controlled from a **now-playing panel available on every tab**: a small
 floating chip (bottom-left) that expands on hover or focus to show album art, the
@@ -336,7 +337,8 @@ for the full schema; in short:
 
 Secrets never reach the browser; the backend holds all tokens. Only
 `create_spotify_playlist.py` (and the Player's playback control) writes to your
-Spotify account, and it only creates new private playlists.
+Spotify account: it creates new private playlists, or replaces the tracks of a
+playlist you own when you choose "Update Spotify".
 
 These are git-ignored and should stay private:
 

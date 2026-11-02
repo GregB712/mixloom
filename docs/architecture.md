@@ -60,7 +60,7 @@ connection, coercion helpers, and upsert logic (`upsert_track`,
   scopes, each with its own token cache. Exposes `auth_status()` and
   `access_token()` (auto-refreshing).
 - `db.py` — all Postgres queries behind the API (playlist list, stats, rows,
-  curation pool, save, editing a curated playlist's tracks in place,
+  curation pool, save, editing a playlist's tracks in place,
   missing-metadata templates, playlist tracks for the player), plus the
   library-intelligence helpers: `find_similar` (nearest-neighbour over the
   normalized audio-feature vector), `duplicates` (group by ISRC), `library_health`
@@ -69,7 +69,7 @@ connection, coercion helpers, and upsert logic (`upsert_track`,
   captures their output line-by-line.
 - `main.py` — the FastAPI app: status/auth endpoints, job endpoints (start +
   Server-Sent-Events log stream), DB-data endpoints, curation, the player token +
-  playlist-tracks endpoints (`PUT /api/playlists/{id}/tracks` to replace a curated
+  playlist-tracks endpoints (`PUT /api/playlists/{id}/tracks` to replace a
   playlist's tracks), the re-sync diff (`GET /api/playlists/{id}/resync`), and the
   library-intelligence endpoints (`/api/tracks/similar`, `/api/duplicates`,
   `/api/library-health`, `/api/saved-filters`).
@@ -139,14 +139,14 @@ playlists play the same way, and a track started from the Player or from Curate'
 "Your playlist" panel is controlled from the same floating now-playing panel on
 every tab.
 
-The Player can also **edit a curated playlist in place**: removing tracks,
-dragging to reorder, and undoing, then saving sends the URIs to
+The Player can also **edit any playlist in place** (exported or curated):
+removing tracks, dragging to reorder, and undoing, then saving sends the URIs to
 `PUT /api/playlists/{id}/tracks`, which rewrites that playlist's `playlist_tracks`
-rows in the new order (restricted to `curated = TRUE` playlists; exported ones are
-read-only). **Push to Spotify** saves any pending edits, then runs
-`create_spotify_playlist.py`; when the DB row already carries a
-`spotify_playlist_id`, `--update` replaces that Spotify playlist's items in place
-instead of creating a new one (the script records the id on first create). For
+rows in the new order. **Push to Spotify** saves any pending edits, then runs
+`create_spotify_playlist.py`; with `--update` it replaces the items of the
+playlist's Spotify counterpart in place instead of creating a new one: the source
+playlist (`spotify_id`) for an exported playlist, or `spotify_playlist_id` (recorded
+by the script on first create) for a curated one. For
 **exported** playlists the Player diffs the DB mirror against the live Spotify
 playlist (`GET /api/playlists/{id}/resync`) and can re-import to reconcile drift.
 
