@@ -22,3 +22,9 @@ export const CHART_COLORS = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"];
 export function chartColor(i: number): string {
   return `var(${CHART_COLORS[i % CHART_COLORS.length]})`;
 }
+
+// Fold text for forgiving search: lowercase, strip accents (incl. Greek tonos),
+// and treat final sigma as sigma, so "αγαπη" matches "Αγάπη".
+export function foldSearch(s: string): string {
+  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/ς/g, "σ");
+}

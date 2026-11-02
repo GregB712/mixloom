@@ -120,6 +120,8 @@ Each step reads from and writes to the shared Postgres database. Steps are
   just like an exported one.
 - Per-track and "play all" buttons with **album art**, and playback that continues
   while you switch tabs.
+- **Search the selected playlist** by title, artist, or album (case- and
+  accent-insensitive) to check whether a track is in it.
 - **Edit any playlist in place**, exported or curated — remove tracks, **drag to
   reorder**, and **undo** — then save back to the database.
 - **Push to Spotify** (needs write access) either as a new private playlist or

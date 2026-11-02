@@ -221,8 +221,9 @@ The frontend proxies `/api` to the backend, so you only open the frontend URL.
   paginated table rounds it out. Sections appear only for the metadata present.
 - **Player** — connect Spotify (player scope, **Premium required**) and play your
   DB playlists — both exported and ones you curated — in the browser, with album
-  art in every row. Per-track and "play all" buttons, and playback that keeps going
-  while you switch tabs. You can **edit any playlist in place**, exported or
+  art in every row. Per-track and "play all" buttons, a **search box** to find
+  tracks in the selected playlist, and playback that keeps going while you switch
+  tabs. You can **edit any playlist in place**, exported or
   curated — remove tracks, **drag to reorder**, and **undo** — then save back to
   the database and **push to Spotify** (write access), either as a new playlist or
   **updating the existing Spotify playlist in place** (for an exported playlist,

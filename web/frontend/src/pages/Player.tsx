@@ -11,7 +11,7 @@ import { useToast } from "../components/ui/Toast";
 import { useDragAutoScroll } from "../hooks/useDragAutoScroll";
 import { useJobStream } from "../hooks/useJobStream";
 import { usePlayback } from "../hooks/usePlayback";
-import { formatDuration } from "../lib/format";
+import { foldSearch, formatDuration } from "../lib/format";
 
 // --------------------------------------------------------------------------- #
 // Page
@@ -69,7 +69,8 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
   // Snapshots for undo (each edit pushes the pre-edit list).
   const [history, setHistory] = useState<PlayerTrack[][]>([]);
   const [pushJobId, setPushJobId] = useState<string | null>(null);
-  useEffect(() => { setWorking(null); setHistory([]); setPushJobId(null); }, [selected]);
+  const [search, setSearch] = useState("");
+  useEffect(() => { setWorking(null); setHistory([]); setPushJobId(null); setSearch(""); }, [selected]);
 
   const serverTracks = (tracks.data as PlayerTrack[] | undefined) ?? [];
   const displayTracks = working ?? serverTracks;
@@ -223,6 +224,8 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
               <TrackList
                 tracks={displayTracks}
                 currentUri={pb.current?.uri ?? null}
+                search={search}
+                onSearch={setSearch}
                 onPlay={(i) => playFrom(displayTracks, i)}
                 onRemove={removeAt}
                 onMove={moveTrack}
@@ -316,6 +319,8 @@ function PlaylistRow({
 function TrackList({
   tracks,
   currentUri,
+  search,
+  onSearch,
   onPlay,
   onRemove,
   onMove,
@@ -323,6 +328,8 @@ function TrackList({
 }: {
   tracks: PlayerTrack[];
   currentUri: string | null;
+  search: string;
+  onSearch: (value: string) => void;
   onPlay: (index: number) => void;
   onRemove?: (index: number) => void;
   onMove?: (from: number, to: number) => void;
@@ -330,20 +337,45 @@ function TrackList({
 }) {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
-  const draggable = !!onMove;
   const listRef = useRef<HTMLDivElement>(null);
   useDragAutoScroll(listRef, dragIndex !== null);
 
+  // Filter by title/artist/album, keeping each track's index in the full list
+  // so play/remove/move still act on the right track.
+  const q = foldSearch(search.trim());
+  const visible = tracks
+    .map((t, i) => ({ t, i }))
+    .filter(({ t }) => !q || foldSearch(`${t.title} ${t.artists} ${t.album}`).includes(q));
+  // Reordering a filtered view is ambiguous, so drag only works unfiltered.
+  const draggable = !!onMove && !q;
+
   return (
     <div ref={listRef} className="stack" style={{ gap: 0 }}>
+      <input
+        className="input"
+        type="search"
+        placeholder="Search this playlist (title, artist, album)…"
+        aria-label="Search tracks in this playlist"
+        value={search}
+        onChange={(e) => onSearch(e.target.value)}
+        style={{ marginBottom: "var(--space-2)" }}
+      />
       <div className="row" style={{ justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
-        <span className="small muted">{tracks.length} tracks</span>
+        <span className="small muted">
+          {q ? `${visible.length} of ${tracks.length} tracks` : `${tracks.length} tracks`}
+          {q && onMove && " · clear the search to drag"}
+        </span>
         <div className="row" style={{ gap: "var(--space-2)" }}>
           <Button size="sm" onClick={() => onPlay(0)}>▶ Play all</Button>
           {headerRight}
         </div>
       </div>
-      {tracks.map((t, i) => {
+      {q && visible.length === 0 && (
+        <p className="muted small" style={{ borderTop: "1px solid var(--border)", paddingTop: "var(--space-3)" }}>
+          No tracks in this playlist match "{search.trim()}".
+        </p>
+      )}
+      {visible.map(({ t, i }) => {
         const isCurrent = t.uri === currentUri;
         return (
           <div
