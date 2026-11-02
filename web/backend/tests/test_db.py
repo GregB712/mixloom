@@ -102,9 +102,15 @@ def test_save_and_update_curated(test_db):
     updated = db.update_playlist_tracks(pid, ["spotify:track:ccc"])
     assert updated is not None and updated["count"] == 1
 
-    # Updating a non-curated (exported) playlist is refused.
+    # Exported playlists are editable too (restore the order; the DB is shared).
     exported = next(r for r in db.list_playlists() if r["name"] == "Exported")
-    assert db.update_playlist_tracks(exported["id"], ["spotify:track:aaa"]) is None
+    original = [t["uri"] for t in db.playlist_tracks(exported["id"])]
+    assert db.update_playlist_tracks(exported["id"], original[::-1])["count"] == len(original)
+    assert [t["uri"] for t in db.playlist_tracks(exported["id"])] == original[::-1]
+    db.update_playlist_tracks(exported["id"], original)
+
+    # A missing playlist is refused.
+    assert db.update_playlist_tracks(999999, ["spotify:track:aaa"]) is None
 
 
 def test_set_spotify_playlist_id(test_db):

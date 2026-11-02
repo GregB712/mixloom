@@ -262,7 +262,7 @@ def update_playlist_tracks_endpoint(playlist_id: int, body: PlaylistTracksBody):
         raise HTTPException(400, "A playlist needs at least one track.")
     result = db.update_playlist_tracks(playlist_id, body.uris)
     if result is None:
-        raise HTTPException(404, "Playlist not found, or not an editable (curated) playlist.")
+        raise HTTPException(404, "Playlist not found, or none of its tracks are in the library.")
     return result
 
 

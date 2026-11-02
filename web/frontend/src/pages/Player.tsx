@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type AuthStatus, type EnvFlags, type PlayerTrack, type PlaylistInfo } from "../api/client";
 import { Button } from "../components/ui/Button";
@@ -8,9 +8,10 @@ import { Callout, EmptyState } from "../components/ui/EmptyState";
 import { LogPanel } from "../components/ui/LogPanel";
 import { TrackArt } from "../components/ui/TrackArt";
 import { useToast } from "../components/ui/Toast";
+import { useDragAutoScroll } from "../hooks/useDragAutoScroll";
 import { useJobStream } from "../hooks/useJobStream";
 import { usePlayback } from "../hooks/usePlayback";
-import { formatDuration } from "../lib/format";
+import { foldSearch, formatDuration } from "../lib/format";
 
 // --------------------------------------------------------------------------- #
 // Page
@@ -56,8 +57,6 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
 
   const list = playlists.data ?? [];
   const selectedPl = useMemo(() => list.find((p) => p.id === selected) ?? null, [list, selected]);
-  // Only playlists built here (curated, never exported) can be edited in place.
-  const editable = !!selectedPl?.curated;
 
   const tracks = useQuery({
     queryKey: ["playlistTracks", selected],
@@ -70,7 +69,8 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
   // Snapshots for undo (each edit pushes the pre-edit list).
   const [history, setHistory] = useState<PlayerTrack[][]>([]);
   const [pushJobId, setPushJobId] = useState<string | null>(null);
-  useEffect(() => { setWorking(null); setHistory([]); setPushJobId(null); }, [selected]);
+  const [search, setSearch] = useState("");
+  useEffect(() => { setWorking(null); setHistory([]); setPushJobId(null); setSearch(""); }, [selected]);
 
   const serverTracks = (tracks.data as PlayerTrack[] | undefined) ?? [];
   const displayTracks = working ?? serverTracks;
@@ -216,7 +216,7 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
               <p className="muted small">Loading tracks…</p>
             ) : displayTracks.length === 0 ? (
               <p className="muted small">
-                {editable && dirty
+                {dirty
                   ? "You removed every track. Add some back or pick another playlist."
                   : "This playlist has no playable tracks."}
               </p>
@@ -224,29 +224,37 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
               <TrackList
                 tracks={displayTracks}
                 currentUri={pb.current?.uri ?? null}
+                search={search}
+                onSearch={setSearch}
                 onPlay={(i) => playFrom(displayTracks, i)}
-                onRemove={editable ? removeAt : undefined}
-                onMove={editable ? moveTrack : undefined}
+                onRemove={removeAt}
+                onMove={moveTrack}
                 headerRight={
-                  editable ? (
-                    <EditControls
-                      env={env}
-                      auth={auth}
-                      dirty={dirty}
-                      canSave={displayTracks.length > 0}
-                      canUndo={history.length > 0}
-                      hasSpotify={!!selectedPl?.spotifyPlaylistId}
-                      saving={saveMut.isPending}
-                      pushing={pushMut.isPending || (pushJobId !== null && !pushStream.done)}
-                      onUndo={undo}
-                      onSave={() => saveMut.mutate()}
-                      onPush={(update) => pushMut.mutate(update)}
-                    />
-                  ) : undefined
+                  <EditControls
+                    env={env}
+                    auth={auth}
+                    dirty={dirty}
+                    canSave={displayTracks.length > 0}
+                    canUndo={history.length > 0}
+                    // "Update Spotify" targets an exported playlist's source, or the
+                    // playlist an earlier push of a curated one created.
+                    hasSpotify={!!(selectedPl?.spotifyId || selectedPl?.spotifyPlaylistId)}
+                    saving={saveMut.isPending}
+                    pushing={pushMut.isPending || (pushJobId !== null && !pushStream.done)}
+                    onUndo={undo}
+                    onSave={() => saveMut.mutate()}
+                    onPush={(update) => {
+                      if (
+                        update && selectedPl?.spotifyId &&
+                        !window.confirm(`Replace the tracks of "${selectedPl.name}" on Spotify with this list? Any changes made on Spotify since the export are overwritten.`)
+                      ) return;
+                      pushMut.mutate(update);
+                    }}
+                  />
                 }
               />
             )}
-            {selected != null && selectedPl && !editable && selectedPl.spotifyId && (
+            {selected != null && selectedPl && selectedPl.spotifyId && (
               <ResyncPanel playlist={selectedPl} auth={auth} />
             )}
             {pushJobId && <LogPanel lines={pushStream.lines} status={pushStream.status} />}
@@ -311,6 +319,8 @@ function PlaylistRow({
 function TrackList({
   tracks,
   currentUri,
+  search,
+  onSearch,
   onPlay,
   onRemove,
   onMove,
@@ -318,6 +328,8 @@ function TrackList({
 }: {
   tracks: PlayerTrack[];
   currentUri: string | null;
+  search: string;
+  onSearch: (value: string) => void;
   onPlay: (index: number) => void;
   onRemove?: (index: number) => void;
   onMove?: (from: number, to: number) => void;
@@ -325,18 +337,45 @@ function TrackList({
 }) {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
-  const draggable = !!onMove;
+  const listRef = useRef<HTMLDivElement>(null);
+  useDragAutoScroll(listRef, dragIndex !== null);
+
+  // Filter by title/artist/album, keeping each track's index in the full list
+  // so play/remove/move still act on the right track.
+  const q = foldSearch(search.trim());
+  const visible = tracks
+    .map((t, i) => ({ t, i }))
+    .filter(({ t }) => !q || foldSearch(`${t.title} ${t.artists} ${t.album}`).includes(q));
+  // Reordering a filtered view is ambiguous, so drag only works unfiltered.
+  const draggable = !!onMove && !q;
 
   return (
-    <div className="stack" style={{ gap: 0 }}>
+    <div ref={listRef} className="stack" style={{ gap: 0 }}>
+      <input
+        className="input"
+        type="search"
+        placeholder="Search this playlist (title, artist, album)…"
+        aria-label="Search tracks in this playlist"
+        value={search}
+        onChange={(e) => onSearch(e.target.value)}
+        style={{ marginBottom: "var(--space-2)" }}
+      />
       <div className="row" style={{ justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
-        <span className="small muted">{tracks.length} tracks</span>
+        <span className="small muted">
+          {q ? `${visible.length} of ${tracks.length} tracks` : `${tracks.length} tracks`}
+          {q && onMove && " · clear the search to drag"}
+        </span>
         <div className="row" style={{ gap: "var(--space-2)" }}>
           <Button size="sm" onClick={() => onPlay(0)}>▶ Play all</Button>
           {headerRight}
         </div>
       </div>
-      {tracks.map((t, i) => {
+      {q && visible.length === 0 && (
+        <p className="muted small" style={{ borderTop: "1px solid var(--border)", paddingTop: "var(--space-3)" }}>
+          No tracks in this playlist match "{search.trim()}".
+        </p>
+      )}
+      {visible.map(({ t, i }) => {
         const isCurrent = t.uri === currentUri;
         return (
           <div
@@ -391,7 +430,7 @@ function TrackList({
   );
 }
 
-// Edit/push controls shown only for curated (database-only) playlists.
+// Edit/push controls for the selected playlist.
 function EditControls({
   env,
   auth,
