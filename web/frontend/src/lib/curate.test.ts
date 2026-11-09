@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Track } from "../api/client";
 import {
   applySort,
+  applySortRange,
   camelotDistance,
   energyCurveOrder,
   mixQuality,
@@ -215,5 +216,21 @@ describe("totalDurationMs", () => {
   it("sums durations, treating null as zero", () => {
     const tracks = [track({ uri: "a", durationMs: 1000 }), track({ uri: "b", durationMs: null }), track({ uri: "c", durationMs: 500 })];
     expect(totalDurationMs(tracks)).toBe(1500);
+  });
+});
+
+describe("applySortRange", () => {
+  const ts = [
+    track({ uri: "a", bpm: 140 }),
+    track({ uri: "b", bpm: 130 }),
+    track({ uri: "c", bpm: 110 }),
+    track({ uri: "d", bpm: 120 }),
+    track({ uri: "e", bpm: 100 }),
+  ];
+  it("sorts only the chosen section and keeps the rest in place", () => {
+    expect(applySortRange(ts, "bpm", 1, 3).map((t) => t.uri)).toEqual(["a", "c", "d", "b", "e"]);
+  });
+  it("clamps and accepts reversed bounds", () => {
+    expect(applySortRange(ts, "bpm", 9, 3).map((t) => t.uri)).toEqual(["a", "b", "c", "e", "d"]);
   });
 });

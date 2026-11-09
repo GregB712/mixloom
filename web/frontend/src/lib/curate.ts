@@ -222,8 +222,16 @@ export function applySort(tracks: Track[], strategy: SortStrategy): Track[] {
   }
 }
 
+// Sort only tracks[start..end] (inclusive, 0-based); everything outside keeps its place.
+export function applySortRange(tracks: Track[], strategy: SortStrategy, start: number, end: number): Track[] {
+  const lo = Math.max(0, Math.min(start, end));
+  const hi = Math.min(tracks.length - 1, Math.max(start, end));
+  if (hi < lo) return [...tracks];
+  return [...tracks.slice(0, lo), ...applySort(tracks.slice(lo, hi + 1), strategy), ...tracks.slice(hi + 1)];
+}
+
 // --------------------------------------------------------------------------- //
-// Vibe grouping                                                                //
+// Vibe grouping                                                             //
 // --------------------------------------------------------------------------- //
 export type VibeScheme = "energyValence" | "bpm" | "party" | "mood" | "genre";
 export type VibeGroup = { key: string; label: string; description: string; tracks: Track[] };
