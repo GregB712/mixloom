@@ -112,12 +112,11 @@ def test_save_and_update_curated(test_db):
     # A missing playlist is refused.
     assert db.update_playlist_tracks(999999, ["spotify:track:aaa"]) is None
 
-
-def test_set_spotify_playlist_id(test_db):
-    saved = db.save_curated("Push Me", ["spotify:track:aaa"])
-    db.set_spotify_playlist_id(saved["playlistId"], "SPNEW99")
-    row = next(r for r in db.list_playlists() if r["id"] == saved["playlistId"])
-    assert row["spotifyPlaylistId"] == "SPNEW99"
+    # A repeated track is kept once instead of breaking the save.
+    dup = ["spotify:track:aaa", "spotify:track:ccc", "spotify:track:aaa"]
+    assert db.update_playlist_tracks(pid, dup)["count"] == 2
+    assert [t["uri"] for t in db.playlist_tracks(pid)] == ["spotify:track:aaa", "spotify:track:ccc"]
+    assert db.save_curated("Dup Build", dup)["count"] == 2
 
 
 def test_delete_playlist_keeps_tracks(test_db):

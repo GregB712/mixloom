@@ -4,9 +4,11 @@ Replaces the old CSV reader. All data now lives in the metadata database; a
 "scope" is either the whole library (playlist_id=None) or one playlist.
 """
 
+import atexit
 import math
+import threading
 
-import psycopg
+from psycopg_pool import ConnectionPool
 
 from config import DATABASE_URL
 
@@ -16,8 +18,23 @@ NUMERIC_FEATURES = [
 ]
 
 
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+
 def _connect():
-    return psycopg.connect(DATABASE_URL)
+    """A pooled connection (a fresh one to Neon costs ~2 s). The pool follows
+    DATABASE_URL, so tests can repoint it. Checked on checkout because Neon
+    drops idle connections when its compute suspends."""
+    global _pool
+    with _pool_lock:
+        if _pool is None or _pool.conninfo != DATABASE_URL:
+            if _pool is not None:
+                _pool.close()
+            _pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8,
+                                   check=ConnectionPool.check_connection, open=True)
+            atexit.register(_pool.close)  # close before shutdown, or its threads can't join
+    return _pool.connection()
 
 
 # --------------------------------------------------------------------------- #
@@ -50,8 +67,6 @@ def list_playlists() -> list[dict]:
             "spotifyPlaylistId": r[4],
             "trackCount": r[5], "withFeatures": r[6],
             "artistCount": r[7], "artistsResolved": r[8],
-            # kept for the dashboard "countries" badge
-            "withCountries": r[8],
         }
         for r in rows
     ]
@@ -322,28 +337,12 @@ def curate_tracks(playlist_ids: list[int]) -> dict:
             ).fetchall()
             name = names[0][0] if len(names) == 1 else f"{len(names)} playlists"
         rows = conn.execute(
-            """
-            SELECT t.spotify_uri, t.title, t.artists_text, t.album, t.duration_ms,
-                   t.bpm, t.energy, t.valence, t.danceability, t.acousticness,
-                   t.camelot, t.key, t.genre, t.mood, t.album_art_url,
-                   EXISTS (SELECT 1 FROM track_artists ta JOIN artists a ON a.id = ta.artist_id
-                           WHERE ta.track_id = t.id AND a.country_code = 'GR') AS greek
-            FROM tracks t
+            f"""{_TRACK_SELECT} FROM tracks t
             WHERE t.id = ANY(%s) AND t.spotify_uri LIKE 'spotify:track:%%'
-            ORDER BY lower(t.title)
-            """,
+            ORDER BY lower(t.title)""",
             (ids,),
         ).fetchall()
-    out = [
-        {
-            "uri": r[0], "title": r[1] or "", "artists": r[2] or "", "album": r[3] or "",
-            "durationMs": _num(r[4]), "bpm": _num(r[5]), "energy": _num(r[6]),
-            "valence": _num(r[7]), "danceability": _num(r[8]), "acousticness": _num(r[9]),
-            "camelot": r[10], "musicalKey": r[11], "genre": r[12], "mood": r[13],
-            "albumArt": r[14], "greek": bool(r[15]),
-        }
-        for r in rows
-    ]
+    out = [_track_payload(r) for r in rows]
     has_features = any(t["bpm"] is not None or t["energy"] is not None for t in out)
     return {"name": name, "hasUris": True, "hasFeatures": has_features, "tracks": out}
 
@@ -403,8 +402,17 @@ def missing_tracks(playlist_ids: list[int]) -> list[dict]:
     return out
 
 
+def _insert_positions(cur, playlist_id: int, ordered: list[tuple[str, int]]) -> None:
+    # executemany pipelines the rows into one round trip instead of one per track.
+    cur.executemany(
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (%s, %s, %s)",
+        [(playlist_id, track_id, pos) for pos, (_, track_id) in enumerate(ordered)],
+    )
+
+
 def save_curated(name: str, uris: list[str]) -> dict | None:
     """Create a curated playlist in the DB from the given ordered track URIs."""
+    uris = list(dict.fromkeys(uris))  # a playlist holds each track once
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -418,12 +426,7 @@ def save_curated(name: str, uris: list[str]) -> dict | None:
                 "INSERT INTO playlists (name, curated) VALUES (%s, TRUE) RETURNING id", (name,)
             )
             pid = cur.fetchone()[0]
-            for position, (_, track_id) in enumerate(ordered):
-                cur.execute(
-                    "INSERT INTO playlist_tracks (playlist_id, track_id, position) "
-                    "VALUES (%s, %s, %s)",
-                    (pid, track_id, position),
-                )
+            _insert_positions(cur, pid, ordered)
         conn.commit()
     return {"playlistId": pid, "name": name, "count": len(ordered)}
 
@@ -432,6 +435,7 @@ def update_playlist_tracks(playlist_id: int, uris: list[str]) -> dict | None:
     """Replace a playlist's tracks with the given ordered URIs (edit in place).
     Returns None if the playlist does not exist or none of the URIs resolve to a
     track."""
+    uris = list(dict.fromkeys(uris))  # a playlist holds each track once
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM playlists WHERE id = %s", (playlist_id,))
@@ -445,12 +449,7 @@ def update_playlist_tracks(playlist_id: int, uris: list[str]) -> dict | None:
             if not ordered:
                 return None
             cur.execute("DELETE FROM playlist_tracks WHERE playlist_id = %s", (playlist_id,))
-            for position, (_, track_id) in enumerate(ordered):
-                cur.execute(
-                    "INSERT INTO playlist_tracks (playlist_id, track_id, position) "
-                    "VALUES (%s, %s, %s)",
-                    (playlist_id, track_id, position),
-                )
+            _insert_positions(cur, playlist_id, ordered)
         conn.commit()
     return {"playlistId": playlist_id, "count": len(ordered)}
 
@@ -519,17 +518,6 @@ def delete_track(track_id: int) -> dict | None:
             cur.execute("DELETE FROM tracks WHERE id = %s", (track_id,))
         conn.commit()
     return {"trackId": track_id, "title": row[0]}
-
-
-def set_spotify_playlist_id(playlist_id: int, spotify_playlist_id: str) -> None:
-    """Record the Spotify id of the playlist a push created, so later pushes can
-    update that playlist in place instead of creating a new one."""
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE playlists SET spotify_playlist_id = %s, updated_at = now() WHERE id = %s",
-            (spotify_playlist_id, playlist_id),
-        )
-        conn.commit()
 
 
 # --------------------------------------------------------------------------- #

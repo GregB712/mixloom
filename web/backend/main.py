@@ -12,15 +12,24 @@ from typing import Any
 import spotipy
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 import db
 from auth import _oauth, access_token, auth_status, authorize_url, exchange_code
-from config import CALLBACK_PATH, FRONTEND_URL, env_flags
+from config import BACKEND_HOST, CALLBACK_PATH, FRONTEND_URL, env_flags
 from jobs import registry
 
 app = FastAPI(title="Mixloom API")
+
+# Refuse requests addressed to any other host name, so a web page that rebinds
+# its own domain to 127.0.0.1 (DNS rebinding) can't read the API, tokens included.
+# "backend" is the Docker service name; "testserver" is FastAPI's TestClient.
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["127.0.0.1", "localhost", BACKEND_HOST, "backend", "testserver"],
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,8 +78,8 @@ def spotify_callback(code: str | None = None, state: str | None = None, error: s
         return RedirectResponse(f"{FRONTEND_URL}/?auth={scope}&status=missing_code")
     try:
         exchange_code(scope, code)
-    except Exception as exc:
-        return RedirectResponse(f"{FRONTEND_URL}/?auth={scope}&status=error&detail={exc}")
+    except Exception:
+        return RedirectResponse(f"{FRONTEND_URL}/?auth={scope}&status=error")
     return RedirectResponse(f"{FRONTEND_URL}/?auth={scope}&status=connected")
 
 
@@ -356,8 +365,7 @@ class CurateSaveBody(BaseModel):
 
 @app.get("/api/curate/tracks")
 def curate_tracks(playlistIds: str = Query("")):
-    ids = [int(x) for x in playlistIds.split(",") if x.strip().lstrip("-").isdigit()]
-    return db.curate_tracks(ids)
+    return db.curate_tracks(_ids(playlistIds))
 
 
 @app.post("/api/curate/save")

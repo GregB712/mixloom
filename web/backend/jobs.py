@@ -5,6 +5,7 @@ captures merged stdout/stderr line-by-line for live streaming over SSE."""
 # so an eagerly-evaluated `list[str]` annotation would resolve to the method.
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -30,7 +31,6 @@ class Job:
         self.startedAt: str | None = None
         self.finishedAt: str | None = None
         self.lines: list[str] = []
-        self._event = threading.Event()  # fires whenever a line is added or status changes
 
     def meta(self) -> dict:
         return {
@@ -46,13 +46,11 @@ class Job:
 
     def _append(self, line: str) -> None:
         self.lines.append(line)
-        self._event.set()
 
     def _finish(self, status: str, returncode: int | None) -> None:
         self.status = status
         self.returncode = returncode
         self.finishedAt = _now()
-        self._event.set()
 
 
 class JobRegistry:
@@ -80,7 +78,6 @@ class JobRegistry:
         cmd = [sys.executable, "-u", str(ROOT / script), *job.args]
         job.status = "running"
         job.startedAt = _now()
-        job._event.set()
         job._append("$ " + " ".join(_display(cmd)))
         try:
             proc = subprocess.Popen(
@@ -91,7 +88,7 @@ class JobRegistry:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                env={**_env(), "PYTHONUNBUFFERED": "1"},
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
         except OSError as exc:
             job._append(f"Failed to start process: {exc}")
@@ -111,11 +108,6 @@ class JobRegistry:
             job._append(line.rstrip("\n"))
         proc.wait()
         job._finish("succeeded" if proc.returncode == 0 else "failed", proc.returncode)
-
-
-def _env() -> dict:
-    import os
-    return dict(os.environ)
 
 
 def _display(cmd: list[str]) -> list[str]:

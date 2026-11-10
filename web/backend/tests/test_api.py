@@ -7,6 +7,12 @@ def test_status_ok(client):
     assert "env" in r.json()
 
 
+def test_unknown_host_is_refused(client):
+    # Guards against DNS rebinding: only local host names may call the API.
+    assert client.get("/api/status", headers={"host": "evil.example"}).status_code == 400
+    assert client.get("/api/status", headers={"host": "localhost:5173"}).status_code == 200
+
+
 def test_playlists_endpoint(client):
     r = client.get("/api/playlists")
     assert r.status_code == 200

@@ -35,13 +35,17 @@ export function Mix() {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const latestLoad = useRef<number | null>(null);
   useDragAutoScroll(listRef, dragIndex !== null);
 
   const byUri = useMemo(() => new Map((library.data?.tracks ?? []).map((t) => [t.uri, t])), [library.data]);
   const tracks = useMemo(() => units?.flat() ?? [], [units]);
   const unitLocked = (u: Unit) => locked.has(u[0].uri);
 
+  // Loads the saved order of a playlist. A slower answer for a playlist picked
+  // earlier is ignored, so the list never shows (and saves) another playlist's tracks.
   const open = async (id: number) => {
+    latestLoad.current = id;
     setPlaylistId(id);
     setUnits(null);
     setLocked(new Set());
@@ -49,6 +53,7 @@ export function Mix() {
     setSel(null);
     try {
       const ordered = await api.playlistTracks(id);
+      if (latestLoad.current !== id) return;
       const list = ordered.map((p) => byUri.get(p.uri)).filter((t): t is Track => !!t);
       setUnits(list.map((t) => [t]));
       setSaved(list.map((t) => t.uri));
@@ -147,7 +152,10 @@ export function Mix() {
               value={playlistId === null ? "" : String(playlistId)}
               options={options}
               disabled={!library.data}
-              onChange={(v) => v && open(Number(v))}
+              onChange={(v) => {
+                if (!v || (dirty && !window.confirm("Discard your unsaved changes to this playlist?"))) return;
+                open(Number(v));
+              }}
             />
           </div>
           {library.isError && <Callout tone="danger">{(library.error as Error).message}</Callout>}

@@ -60,6 +60,6 @@ if [[ ! -d node_modules ]]; then
   echo "Installing frontend dependencies…"
   npm install
 fi
-npm run dev -- --host &
+npm run dev &
 
 wait
