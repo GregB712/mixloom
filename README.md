@@ -97,13 +97,13 @@ SPOTIPY_CLIENT_SECRET=your_spotify_client_secret
 SPOTIPY_REDIRECT_URI=http://127.0.0.1:8888/callback
 FREQBLOG_API_KEY=your_freqblog_api_key
 CONTACT_EMAIL=you@example.com
-# Optional — defaults to the docker-compose database below:
-# DATABASE_URL=postgresql://spotify:spotify@localhost:5432/spotify_meta
+# Your Neon connection string (section 2.4):
+DATABASE_URL=postgresql://USER:PASSWORD@ep-xxxx.REGION.aws.neon.tech/neondb?sslmode=require
 ```
 
 `FREQBLOG_API_KEY` is only needed for FreqBlog enrichment; `CONTACT_EMAIL` only
-for country enrichment. `DATABASE_URL` is optional — it defaults to the
-docker-compose database. Keep `.env` private (it is git-ignored).
+for country enrichment. Without `DATABASE_URL` the app uses the local
+docker database (`postgresql://spotify:spotify@localhost:5432/spotify_meta`). Keep `.env` private (it is git-ignored).
 
 ### 2.3 Register the Spotify redirect URI
 
@@ -118,22 +118,37 @@ This single URI serves every Spotify authorization — read (export), write
 (create playlist), and player (streaming). If you change `SPOTIPY_REDIRECT_URI`,
 register the new value too.
 
-### 2.4 Start the database
+### 2.4 Set up the database (Neon)
+
+The database is hosted on [Neon](https://neon.tech) (serverless Postgres; the
+free tier is plenty). Create a project, open **Connect**, copy the direct
+connection string (not the `-pooler` one), and set it as `DATABASE_URL` in
+`.env`. Then create the tables once:
+
+```bash
+python scripts/db_migrate.py
+```
+
+The free tier suspends the database when idle, so the first request after a
+pause takes about a second.
+
+**Moving existing data from the docker database to Neon** (one time, into an
+empty Neon database). This runs `pg_dump`/`psql` inside the old container, so no
+local Postgres tools are needed:
 
 ```bash
 docker compose -f db/docker-compose.yml up -d
+# Neon URLs contain "&", so read .env with python-dotenv instead of sourcing it.
+export DATABASE_URL=$(.venv/bin/python -c "from dotenv import dotenv_values; print(dotenv_values('.env')['DATABASE_URL'])")
+docker exec spotify_meta_db pg_dump -U spotify --no-owner --no-privileges spotify_meta \
+  | docker exec -i -e DATABASE_URL spotify_meta_db sh -c 'psql "$DATABASE_URL" -1 -v ON_ERROR_STOP=1 -q'
+docker compose -f db/docker-compose.yml down   # the volume keeps a backup
 ```
 
-Postgres 16 comes up on `localhost:5432` with user/password/db
-`spotify`/`spotify`/`spotify_meta`, and the schema in `db/schema.sql` is applied
-automatically on first boot. Data persists in a named Docker volume.
-
-Using your own Postgres instead? Set `DATABASE_URL` in `.env` and create the
-tables once with:
-
-```bash
-python scripts/db_init.py
-```
+**Local docker database (offline).** Leave `DATABASE_URL` unset and run
+`docker compose -f db/docker-compose.yml up -d`: Postgres 16 comes up on
+`localhost:5432` (`spotify`/`spotify`/`spotify_meta`) with the schema applied on
+first boot.
 
 **Applying migrations.** Schema changes after the initial release live in
 `db/migrations/` and are applied with the lightweight runner:
@@ -243,18 +258,18 @@ way through (the queue extends automatically past the first 100 tracks).
 
 ### 3.4 Run the whole stack in Docker (optional)
 
-Instead of a venv + npm, bring up Postgres, the backend, and the frontend with
-one command from the repo root:
+Instead of a venv + npm, bring up the backend and the frontend with one command
+from the repo root (the database stays on Neon):
 
 ```bash
 docker compose up --build
 ```
 
 Then open `http://localhost:5173` (backend on `http://localhost:8888`). It reads
-Spotify credentials from `.env`, points the backend at the `db` service, and
-applies migrations on boot. Keep `SPOTIPY_REDIRECT_URI` as
+Spotify credentials and `DATABASE_URL` from `.env`, and applies migrations on
+boot. Keep `SPOTIPY_REDIRECT_URI` as
 `http://127.0.0.1:8888/callback` so the published backend port handles the OAuth
-callback. Stop with `Ctrl+C`; data persists in the `mixloom_data` volume.
+callback. Stop with `Ctrl+C`.
 
 ## 4. Use the CLI scripts
 
