@@ -795,13 +795,13 @@ function SimilarDrawer({
   );
 }
 
-function MixDot({ prev, curr }: { prev: Track | null; curr: Track }) {
+export function MixDot({ prev, curr }: { prev: Track | null; curr: Track }) {
   if (!prev) return <span style={{ width: 10 }} />;
   const q = mixQuality(prev, curr);
   return <span className={`mix mix--${q}`} title={`Transition: ${q}`} />;
 }
 
-function TrackChips({ track }: { track: Track }) {
+export function TrackChips({ track }: { track: Track }) {
   return (
     <span className="chips">
       {track.bpm !== null && <span className="chip">{Math.round(track.bpm)} BPM</span>}

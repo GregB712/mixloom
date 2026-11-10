@@ -31,7 +31,7 @@ export function camelotDistance(a: string | null, b: string | null): number {
 // --------------------------------------------------------------------------- //
 // Transition cost + smooth ordering (greedy nearest-neighbour)                 //
 // --------------------------------------------------------------------------- //
-function transitionCost(a: Track, b: Track): number {
+export function transitionCost(a: Track, b: Track): number {
   const camelot = camelotDistance(a.camelot, b.camelot);
   const bpm = a.bpm !== null && b.bpm !== null ? Math.abs(a.bpm - b.bpm) : 18;
   const energy = a.energy !== null && b.energy !== null ? Math.abs(a.energy - b.energy) : 0.3;
@@ -228,6 +228,45 @@ export function applySortRange(tracks: Track[], strategy: SortStrategy, start: n
   const hi = Math.min(tracks.length - 1, Math.max(start, end));
   if (hi < lo) return [...tracks];
   return [...tracks.slice(0, lo), ...applySort(tracks.slice(lo, hi + 1), strategy), ...tracks.slice(hi + 1)];
+}
+
+// A playlist being mixed, as units: a single track, or a block of consecutive
+// tracks that moves and swaps as one. A unit is locked when its first track is.
+export type Unit = Track[];
+const isLocked = (u: Unit, locked: Set<string>) => locked.has(u[0].uri);
+const last = (u: Unit) => u[u.length - 1];
+
+// Indices of the unlocked units that could swap into slot i, smoothest first:
+// ranked by the transition into the unit's first track and out of its last
+// track, after the swap.
+export function swapCandidates(units: Unit[], i: number, locked: Set<string>): number[] {
+  const around = (s: Unit[]) =>
+    (i > 0 ? transitionCost(last(s[i - 1]), s[i][0]) : 0) +
+    (i < s.length - 1 ? transitionCost(last(s[i]), s[i + 1][0]) : 0);
+  return units
+    .map((u, j) => ({ u, j }))
+    .filter(({ u, j }) => j !== i && !isLocked(u, locked))
+    .map(({ j }) => {
+      const s = [...units];
+      [s[i], s[j]] = [s[j], s[i]];
+      return { j, cost: around(s) };
+    })
+    .sort((a, b) => a.cost - b.cost)
+    .map((c) => c.j);
+}
+
+// Move units[from] to slot `to` while every locked unit keeps its index: the
+// move happens within the unlocked units only, which then refill the unlocked slots.
+export function moveUnlocked(units: Unit[], from: number, to: number, locked: Set<string>): Unit[] {
+  const slots = units.map((_, i) => i).filter((i) => !isLocked(units[i], locked));
+  const a = slots.indexOf(from);
+  const b = slots.indexOf(to);
+  if (a < 0 || b < 0 || a === b) return units;
+  const free = slots.map((i) => units[i]);
+  free.splice(b, 0, free.splice(a, 1)[0]);
+  const next = [...units];
+  slots.forEach((slot, k) => (next[slot] = free[k]));
+  return next;
 }
 
 // --------------------------------------------------------------------------- //
