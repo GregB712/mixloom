@@ -12,7 +12,7 @@ librosa
 mutagen
 
 # Postgres metadata DB (scripts/db_init.py, scripts/db_import.py).
-psycopg[binary]
+psycopg[binary,pool]
 
 # Web app backend (web/backend)
 fastapi

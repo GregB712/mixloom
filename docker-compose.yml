@@ -18,7 +18,7 @@ services:
     environment:
       FRONTEND_URL: http://localhost:5173
     ports:
-      - "8888:8888"
+      - "127.0.0.1:8888:8888"
 
   frontend:
     build:
@@ -29,7 +29,7 @@ services:
     environment:
       VITE_API_PROXY: http://backend:8888
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     depends_on:
       - backend
 

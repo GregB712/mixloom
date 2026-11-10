@@ -3,7 +3,7 @@
 spotipy
 python-dotenv
 pycountry
-psycopg[binary]
+psycopg[binary,pool]
 numpy
 fastapi
 uvicorn

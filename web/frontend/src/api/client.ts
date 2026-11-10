@@ -39,7 +39,6 @@ export type PlaylistInfo = {
   withFeatures: number;
   artistCount: number;
   artistsResolved: number;
-  withCountries: number;
 };
 
 export type FileStats = {

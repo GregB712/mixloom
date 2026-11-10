@@ -80,7 +80,7 @@ function DashboardBody({
             </div>
             {info && (
               <div className="row" style={{ gap: "var(--space-2)" }}>
-                {info.withCountries > 0 && <Badge tone="accent">countries</Badge>}
+                {info.artistsResolved > 0 && <Badge tone="accent">countries</Badge>}
                 {info.withFeatures > 0 && <Badge tone="accent">audio features</Badge>}
                 <span className="small faint">{info.withFeatures}/{info.trackCount} with features</span>
               </div>
