@@ -102,7 +102,7 @@ export function App() {
 
           {tab === "run" && <RunPipeline env={env} auth={authState} />}
           {tab === "curate" && <Curate env={env} auth={authState} />}
-          {tab === "mix" && <Mix />}
+          {tab === "mix" && <Mix env={env} auth={authState} />}
           {tab === "tracks" && <Metadata />}
           {tab === "dash" && <Dashboard />}
           {tab === "player" && <Player env={env} auth={authState} />}

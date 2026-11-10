@@ -6,10 +6,11 @@ private playlist and records its Spotify id on the DB row. With --update, it
 replaces the tracks of the playlist's Spotify counterpart in place (no new
 playlist): the source playlist for an exported playlist, or the one recorded by
 an earlier push for a curated one. It falls back to creating a new playlist if
-there is no counterpart or it is gone. Requires the SPOTIPY_* variables in .env.
+there is no counterpart or it is gone; --update-only fails instead, so it never
+creates a playlist. Requires the SPOTIPY_* variables in .env.
 
 Usage:
-    python create_spotify_playlist.py <playlist_db_id> [new playlist name] [--update]
+    python create_spotify_playlist.py <playlist_db_id> [new playlist name] [--update | --update-only]
 """
 
 import os
@@ -86,8 +87,10 @@ def main():
     except ImportError:
         raise SystemExit("Missing driver. Install with:  pip install 'psycopg[binary]'")
 
-    args = [a for a in sys.argv[1:] if a != "--update"]
-    update = "--update" in sys.argv[1:]
+    flags = {"--update", "--update-only"}
+    args = [a for a in sys.argv[1:] if a not in flags]
+    update_only = "--update-only" in sys.argv[1:]
+    update = update_only or "--update" in sys.argv[1:]
 
     if args:
         try:
@@ -103,6 +106,9 @@ def main():
         raise SystemExit("Playlist name cannot be empty.")
 
     will_update = update and bool(existing_sp_id)
+    if update_only and not will_update:
+        raise SystemExit("This playlist has no Spotify counterpart to update. "
+                         "Create it on Spotify first (Curate tab).")
     print(f"\nSource playlist (db id {playlist_id}): {source_name}")
     print(f"Tracks to add: {len(uris)}")
     print(f"Playlist name: {playlist_name}")
@@ -137,6 +143,9 @@ def main():
                 print(f"Spotify URL: {url}")
                 return
             except SpotifyException as exc:
+                if exc.http_status == 404 and update_only:
+                    print("\nThe Spotify playlist no longer exists. Nothing was changed.")
+                    raise SystemExit(1) from exc
                 if exc.http_status == 404:
                     print("Stored Spotify playlist no longer exists; creating a new one.")
                     store_spotify_id(playlist_id, None)

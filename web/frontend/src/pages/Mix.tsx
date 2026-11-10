@@ -1,14 +1,16 @@
 import { Fragment, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Track } from "../api/client";
+import { api, type AuthStatus, type EnvFlags, type Track } from "../api/client";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Callout, EmptyState } from "../components/ui/EmptyState";
+import { LogPanel } from "../components/ui/LogPanel";
 import { Modal } from "../components/ui/Modal";
 import { Select } from "../components/ui/Select";
 import { TrackArt } from "../components/ui/TrackArt";
 import { useToast } from "../components/ui/Toast";
 import { useDragAutoScroll } from "../hooks/useDragAutoScroll";
+import { useJobStream } from "../hooks/useJobStream";
 import { formatDuration } from "../lib/format";
 import { moveUnlocked, swapCandidates, totalDurationMs, transitionCost, type Unit } from "../lib/curate";
 import { MixDot, TrackChips } from "./Curate";
@@ -19,7 +21,7 @@ type Cycle = { index: number; base: Unit[]; candidates: number[]; rank: number }
 // A continuous run of selected units, by unit index (inclusive).
 type Selection = { from: number; to: number };
 
-export function Mix() {
+export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
   const toast = useToast();
   const qc = useQueryClient();
   const playlists = useQuery({ queryKey: ["playlists"], queryFn: api.playlists });
@@ -47,6 +49,7 @@ export function Mix() {
   const open = async (id: number) => {
     latestLoad.current = id;
     setPlaylistId(id);
+    setJobId(null);
     setUnits(null);
     setLocked(new Set());
     setCycle(null);
@@ -134,6 +137,24 @@ export function Mix() {
     onError: (e) => toast.notify((e as Error).message, "danger"),
   });
 
+  // Update the playlist's existing Spotify counterpart in place (never creates
+  // one). Unsaved changes are saved first, since the push reads the database.
+  const info = playlists.data?.find((p) => p.id === playlistId);
+  const onSpotify = !!(info?.spotifyId || info?.spotifyPlaylistId);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const stream = useJobStream(jobId, (ok) =>
+    toast.notify(ok ? "Updated on Spotify." : "Spotify update failed. See the log.", ok ? "ok" : "danger"),
+  );
+  const push = useMutation({
+    mutationFn: async () => {
+      if (dirty) await save.mutateAsync();
+      return (await api.updateOnSpotify(playlistId as number)).jobId;
+    },
+    onSuccess: setJobId,
+    onError: (e) => toast.notify((e as Error).message, "danger"),
+  });
+  const pushBusy = push.isPending || (jobId !== null && !stream.done);
+
   const options = [
     { value: "", label: "Choose a playlist…" },
     ...(playlists.data ?? []).map((p) => ({ value: String(p.id), label: `${p.name} (${p.trackCount})` })),
@@ -171,12 +192,27 @@ export function Mix() {
               units ? (
                 <div className="row" style={{ gap: "var(--space-2)" }}>
                   <Button variant="ghost" size="sm" disabled={!dirty} onClick={() => open(playlistId)}>Discard</Button>
-                  <Button size="sm" disabled={!dirty || !tracks.length} loading={save.isPending} onClick={() => save.mutate()}>Save</Button>
+                  <Button size="sm" variant={onSpotify && env.spotify && auth.write ? "secondary" : "primary"} disabled={!dirty || !tracks.length} loading={save.isPending} onClick={() => save.mutate()}>Save</Button>
+                  {onSpotify && env.spotify && auth.write && (
+                    <Button size="sm" disabled={!tracks.length || pushBusy} loading={pushBusy} onClick={() => push.mutate()}
+                      title={dirty ? "Save, then update this playlist on Spotify" : "Update this playlist on Spotify"}>
+                      Update on Spotify
+                    </Button>
+                  )}
                 </div>
               ) : undefined
             }
           />
           <CardBody>
+            {units && env.spotify && (!onSpotify ? (
+              <span className="small faint">This playlist isn't on Spotify yet. Create it from the Curate tab first; Mix only updates existing ones.</span>
+            ) : !auth.write && (
+              <div className="row">
+                <span className="muted small">Updating on Spotify needs write access.</span>
+                <Button size="sm" onClick={() => { window.location.href = api.loginUrl("write"); }}>Connect Spotify (write)</Button>
+              </div>
+            ))}
+            {jobId && <LogPanel lines={stream.lines} status={stream.status} />}
             {units && units.length === 0 && (
               <EmptyState icon="➕" title="Empty playlist">
                 <Button size="sm" onClick={() => setAddAt(0)}>+ Add a track</Button>
