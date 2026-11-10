@@ -9,6 +9,8 @@ import {
   parseCamelot,
   smoothCurveOrder,
   smoothDanceOrder,
+  moveUnlocked,
+  swapCandidates,
   totalDurationMs,
   vibeGroups,
 } from "./curate";
@@ -232,5 +234,49 @@ describe("applySortRange", () => {
   });
   it("clamps and accepts reversed bounds", () => {
     expect(applySortRange(ts, "bpm", 9, 3).map((t) => t.uri)).toEqual(["a", "b", "c", "e", "d"]);
+  });
+});
+
+describe("swapCandidates", () => {
+  const a = track({ uri: "a", bpm: 120, camelot: "8A", energy: 0.5 });
+  const far = track({ uri: "far", bpm: 160, camelot: "2B", energy: 0.95 });
+  const c = track({ uri: "c", bpm: 121, camelot: "8A", energy: 0.5 });
+  const near = track({ uri: "near", bpm: 120, camelot: "8A", energy: 0.52 });
+  const far2 = track({ uri: "far2", bpm: 159, camelot: "2B", energy: 0.94 });
+
+  it("ranks the smoothest replacement for a slot first", () => {
+    expect(swapCandidates([[a], [far], [c], [near]], 1, new Set())).toEqual([3, 2, 0]);
+  });
+
+  it("never offers locked units", () => {
+    expect(swapCandidates([[a], [far], [c], [near]], 1, new Set(["near", "a"]))).toEqual([2]);
+  });
+
+  it("matches a block on its first track going in and its last coming out", () => {
+    // block [near, far2] fits after a (via near) and before far (via far2)
+    expect(swapCandidates([[a], [far], [near, far2]], 1, new Set())).toEqual([2, 0]);
+  });
+});
+
+describe("moveUnlocked", () => {
+  const [a, b, c, d] = ["a", "b", "c", "d"].map((uri) => track({ uri }));
+  const uris = (us: Track[][]) => us.flat().map((t) => t.uri).join("");
+
+  it("moves a unit like a plain drag when nothing is locked", () => {
+    expect(uris(moveUnlocked([[a], [b], [c], [d]], 0, 2, new Set()))).toBe("bcad");
+  });
+
+  it("moves a block as one", () => {
+    expect(uris(moveUnlocked([[a], [b, c], [d]], 1, 2, new Set()))).toBe("adbc");
+  });
+
+  it("keeps locked units at their index", () => {
+    expect(uris(moveUnlocked([[a], [b], [c], [d]], 0, 3, new Set(["b"])))).toBe("cbda");
+  });
+
+  it("refuses to move a locked unit or drop onto one", () => {
+    const list = [[a], [b], [c], [d]];
+    expect(moveUnlocked(list, 1, 3, new Set(["b"]))).toBe(list);
+    expect(moveUnlocked(list, 0, 1, new Set(["b"]))).toBe(list);
   });
 });
