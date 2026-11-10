@@ -7,7 +7,7 @@ database schema. For what the app *does*, see [overview.md](overview.md).
 
 | Layer | Technology |
 |-------|-----------|
-| Database | PostgreSQL 16 (Docker, `db/docker-compose.yml`) |
+| Database | PostgreSQL on Neon (hosted); `db/docker-compose.yml` for an offline local copy |
 | DB driver | `psycopg` 3 |
 | Backend | FastAPI + Uvicorn (Python 3.10+) |
 | Spotify | `spotipy` (OAuth read / write / player scopes) |
@@ -17,7 +17,7 @@ database schema. For what the app *does*, see [overview.md](overview.md).
 | Tests | Vitest (frontend), pytest + FastAPI TestClient (backend) |
 | Migrations | `scripts/db_migrate.py` + `db/migrations/*.sql` (tracked in `schema_migrations`) |
 
-Everything runs on one machine against one local Postgres database and one `.env`.
+Everything runs on one machine against one Postgres database (Neon, via `DATABASE_URL`) and one `.env`.
 
 ## Components
 
@@ -221,7 +221,8 @@ Indexes cover the foreign keys plus `tracks.isrc`, `tracks.feature_source`, and
   (`ruff.toml`), applies migrations against a throwaway Postgres service, and runs
   pytest (deps from `requirements-ci.txt`).
 - **Docker** — `docker-compose.yml` at the repo root builds and runs all three
-  services (db, backend, frontend); the backend image applies migrations on boot.
+  services (backend, frontend) against the Neon `DATABASE_URL` from `.env`; the
+  backend image applies migrations on boot.
 
 ## Security & privacy notes
 
@@ -231,5 +232,5 @@ Indexes cover the foreign keys plus `tracks.isrc`, `tracks.feature_source`, and
   player access token when it connects the SDK.
 - The only writes to your Spotify account are creating new **private** playlists
   and controlling playback on your own device.
-- Database contents live in a Docker volume (`spotify_meta_data`), outside the
-  repo and git.
+- Database contents live in your Neon project (credentials only in `.env`),
+  outside the repo and git.

@@ -39,6 +39,12 @@ def ensure_database(url: str) -> bool:
     if not target_db:
         raise SystemExit("DATABASE_URL has no database name.")
 
+    try:  # already reachable (e.g. a hosted Neon DB): nothing to create
+        psycopg.connect(url).close()
+        return False
+    except psycopg.OperationalError:
+        pass
+
     admin_url = urlunparse(parsed._replace(path="/postgres"))
     with psycopg.connect(admin_url, autocommit=True) as conn:
         exists = conn.execute(
@@ -91,8 +97,8 @@ def main() -> None:
     except Exception as exc:  # psycopg.OperationalError etc.
         raise SystemExit(
             f"Database setup failed: {exc}\n"
-            "Is Postgres running and reachable at DATABASE_URL? "
-            "To start one locally:  docker compose -f db/docker-compose.yml up -d"
+            "Is DATABASE_URL in .env set to your Neon connection string? "
+            "(Or start a local one:  docker compose -f db/docker-compose.yml up -d)"
         ) from exc
 
     print("Done.")

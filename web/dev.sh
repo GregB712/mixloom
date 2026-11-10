@@ -42,7 +42,8 @@ try:
     print(f"Database: reachable ({safe})")
 except Exception as exc:
     print(f"Database: NOT reachable ({safe}) - {exc.__class__.__name__}", file=sys.stderr)
-    print("  Start it with:  docker compose -f db/docker-compose.yml up -d", file=sys.stderr)
+    print("  Check DATABASE_URL in .env (your Neon connection string), or start a", file=sys.stderr)
+    print("  local one with:  docker compose -f db/docker-compose.yml up -d", file=sys.stderr)
     print("  (the app will show backend errors until the DB is up)", file=sys.stderr)
 PY
 
