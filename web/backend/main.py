@@ -131,6 +131,7 @@ class CreateBody(BaseModel):
     playlistId: int
     name: str = ""
     update: bool = False  # update the existing Spotify playlist in place
+    updateOnly: bool = False  # update in place, never create a new playlist
 
 
 def _scope_args(playlist_ids: list[int]) -> list[str]:
@@ -174,7 +175,9 @@ def job_create_playlist(body: CreateBody):
     args = [str(body.playlistId)]
     if body.name.strip():
         args.append(body.name.strip())
-    if body.update:
+    if body.updateOnly:
+        args.append("--update-only")
+    elif body.update:
         args.append("--update")
     # The script prompts "[y/N]"; feed "y" so it proceeds.
     job = registry.start("create-playlist", args, stdin_text="y\n")

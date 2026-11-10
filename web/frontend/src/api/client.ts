@@ -202,6 +202,8 @@ export const api = {
     post<{ jobId: string }>("/api/jobs/analyze-local", { audioDir, playlistIds }),
   createPlaylist: (playlistId: number, name: string, update = false) =>
     post<{ jobId: string }>("/api/jobs/create-playlist", { playlistId, name, update }),
+  updateOnSpotify: (playlistId: number) =>
+    post<{ jobId: string }>("/api/jobs/create-playlist", { playlistId, updateOnly: true }),
 
   curateTracks: (playlistIds: number[]) =>
     get<CuratePool>(`/api/curate/tracks${playlistIds.length ? `?playlistIds=${playlistIds.join(",")}` : ""}`),
