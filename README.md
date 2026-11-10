@@ -209,8 +209,9 @@ The frontend proxies `/api` to the backend, so you only open the frontend URL.
   this** to pull in nearest-neighbour tracks by audio-feature similarity. **Play
   the built playlist** straight from the "Your playlist" panel. Save to the DB,
   and with write access create the private Spotify playlist in that exact order.
-  You can also **open an existing curated playlist** back into the builder and
-  save changes in place (updating its Spotify copy if it has one).
+  You can also **open any existing playlist** (exported or curated) back into the
+  builder in its saved order, **reorder just a section** (from/to track number +
+  an order profile), and save changes in place (updating its Spotify copy if it has one).
 - **Dashboard** — pick one playlist or the whole library and view metrics (tracks,
   unique artists, albums, duration, % Greek, median BPM), top artists, tracks per
   source playlist, country/Greek/lookup-status breakdowns, audio-feature

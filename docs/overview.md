@@ -94,8 +94,10 @@ Each step reads from and writes to the shared Postgres database. Steps are
   connected.
 - **Save** the ordered result as a curated playlist in the DB; with write access,
   create the matching private Spotify playlist in that exact order. You can also
-  **open an existing curated playlist** back into the builder and save changes in
-  place (updating its Spotify copy when it has one).
+  **open any existing playlist** (exported or curated) back into the builder in its
+  saved order and save changes in place (updating its Spotify copy when it has one).
+- **Reorder a section**: set a from/to track number and apply an order profile to
+  just that part; the tracks before and after keep their places.
 
 ### Dashboard tab
 - Inspect one playlist or the whole library.

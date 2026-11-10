@@ -16,6 +16,7 @@ import { usePlayback } from "../hooks/usePlayback";
 import { formatDuration } from "../lib/format";
 import {
   applySort,
+  applySortRange,
   mixQuality,
   totalDurationMs,
   vibeGroups,
@@ -76,6 +77,7 @@ function CurateBody({
 }) {
   const playlistIds = source.map(Number);
   const sourceKey = [...source].sort().join(",");
+  const toast = useToast();
   const pool = useQuery({ queryKey: ["curate", sourceKey], queryFn: () => api.curateTracks(playlistIds) });
   const [selected, setSelected] = useState<string[]>([]);
   const [strategy, setStrategy] = useState<SortStrategy>("smooth");
@@ -91,24 +93,26 @@ function CurateBody({
       return h.slice(0, -1);
     });
 
-  // When set, the builder is editing an existing curated playlist in place
+  // When set, the builder is editing an existing playlist in place
   // (save writes back to it) rather than creating a brand-new one.
   const [editing, setEditing] = useState<{ id: number; name: string } | null>(null);
   const skipReset = useRef(false);
 
   // Reset the working set when the source changes (unless we just loaded an
-  // existing curated playlist, which deliberately sets the source).
+  // existing playlist, which deliberately sets the source).
   useEffect(() => {
     if (skipReset.current) { skipReset.current = false; return; }
     setSelected([]); setHistory([]); setEditing(null);
   }, [sourceKey]);
 
-  // Load a curated playlist's tracks into the builder to edit and save back.
-  const openCurated = async (pl: PlaylistInfo) => {
+  // Load a playlist's tracks (exported or curated) into the builder, in their
+  // saved order, to edit and save back.
+  const openPlaylist = async (pl: PlaylistInfo) => {
     const tracks = await api.playlistTracks(pl.id);
     if (source.length) { skipReset.current = true; onSource([]); } // whole library resolves its tracks
     setSelected(tracks.map((t) => t.uri));
     setHistory([]);
+    setStrategy("manual"); // keep the saved order until a profile is applied
     setEditing({ id: pl.id, name: pl.name });
   };
 
@@ -154,6 +158,12 @@ function CurateBody({
     pushHistory();
     setStrategy(s);
     setSelected(applySort(selectedTracks, s).map((t) => t.uri));
+  };
+  // Apply an order profile to one section (0-based, inclusive); the rest stays put.
+  const reorderRange = (s: SortStrategy, start: number, end: number) => {
+    pushHistory();
+    setSelected(applySortRange(selectedTracks, s, start, end).map((t) => t.uri));
+    setStrategy("manual");
   };
   // Hand reorder via drag-and-drop; the order becomes the manual selection order.
   const moveTrack = (from: number, to: number) => {
@@ -202,21 +212,23 @@ function CurateBody({
               smooth-transition sorting need the audio-feature enrichment step.
             </Callout>
           )}
-          {playlists.some((p) => p.curated) && (
-            <div className="row" style={{ gap: "var(--space-2)", alignItems: "center" }}>
-              <span className="small faint">Edit an existing curated playlist:</span>
-              {playlists.filter((p) => p.curated).map((p) => (
-                <Button
-                  key={p.id}
-                  variant={editing?.id === p.id ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => openCurated(p)}
-                >
-                  ★ {p.name}
-                </Button>
-              ))}
-            </div>
-          )}
+          <div style={{ maxWidth: 520 }}>
+            <Select
+              label="Or edit an existing playlist (keeps its current order)"
+              value={editing ? String(editing.id) : ""}
+              options={[
+                { value: "", label: "Choose a playlist…" },
+                ...playlists.map((p) => ({
+                  value: String(p.id),
+                  label: `${p.curated ? "★ " : ""}${p.name} (${p.trackCount})`,
+                })),
+              ]}
+              onChange={(v) => {
+                const pl = playlists.find((p) => String(p.id) === v);
+                if (pl) openPlaylist(pl).catch((e: Error) => toast.notify(e.message, "danger"));
+              }}
+            />
+          </div>
           {editing && (
             <Callout tone="ok">
               Editing <code>{editing.name}</code> in place — saving writes changes back to it.
@@ -238,6 +250,7 @@ function CurateBody({
             onUndo={undo}
             onStrategy={reorder}
             onReapply={() => reorder(strategy)}
+            onReorderRange={reorderRange}
             onRemove={(u) => removeUris([u])}
             onClear={clearSelection}
             onMove={moveTrack}
@@ -550,6 +563,7 @@ function PlaylistCard({
   onUndo,
   onStrategy,
   onReapply,
+  onReorderRange,
   onRemove,
   onClear,
   onMove,
@@ -563,6 +577,7 @@ function PlaylistCard({
   onUndo: () => void;
   onStrategy: (s: SortStrategy) => void;
   onReapply: () => void;
+  onReorderRange: (s: SortStrategy, start: number, end: number) => void;
   onRemove: (uri: string) => void;
   onClear: () => void;
   onMove: (from: number, to: number) => void;
@@ -575,6 +590,14 @@ function PlaylistCard({
   // Which track's "similar" drawer is open (by URI), if any.
   const [similarFor, setSimilarFor] = useState<string | null>(null);
   const selectedUris = useMemo(() => new Set(selectedTracks.map((t) => t.uri)), [selectedTracks]);
+  // Section reorder: 1-based track numbers as typed; "" = not set.
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
+  const [rangeStrategy, setRangeStrategy] = useState<SortStrategy>("smooth");
+  const from = Number(rangeFrom);
+  const to = Number(rangeTo);
+  const rangeValid =
+    Number.isInteger(from) && Number.isInteger(to) && from >= 1 && to > from && to <= selectedTracks.length;
 
   // Play the built playlist in its current order via the shared Web Playback
   // controller (same engine as the Player tab).
@@ -616,9 +639,33 @@ function PlaylistCard({
               </div>
               <Button variant="secondary" size="sm" onClick={onReapply}>Re-apply order</Button>
             </div>
+            <div className="row" style={{ alignItems: "flex-end", gap: "var(--space-2)" }}>
+              <div className="field">
+                <label className="label" htmlFor="range-from">Section from #</label>
+                <input id="range-from" className="input" style={{ width: 80 }} inputMode="numeric" placeholder="1"
+                  value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} />
+              </div>
+              <div className="field">
+                <label className="label" htmlFor="range-to">to #</label>
+                <input id="range-to" className="input" style={{ width: 80 }} inputMode="numeric" placeholder={String(selectedTracks.length)}
+                  value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} />
+              </div>
+              <div style={{ flex: 1, minWidth: 220, maxWidth: 360 }}>
+                <Select
+                  label="Section order"
+                  value={rangeStrategy}
+                  options={SORT_OPTIONS.filter((o) => o.value !== "manual")}
+                  onChange={(v) => setRangeStrategy(v as SortStrategy)}
+                />
+              </div>
+              <Button variant="secondary" size="sm" disabled={!rangeValid} onClick={() => onReorderRange(rangeStrategy, from - 1, to - 1)}>
+                Reorder section
+              </Button>
+            </div>
             <div className="multiselect__box" style={{ maxHeight: 420 }}>
               {selectedTracks.map((t, i) => {
                 const isCurrent = currentUri === t.uri;
+                const inRange = rangeValid && i >= from - 1 && i <= to - 1;
                 return (
                   <div
                     className="option"
@@ -631,6 +678,7 @@ function PlaylistCard({
                     style={{
                       cursor: "grab",
                       opacity: dragIndex === i ? 0.4 : 1,
+                      background: inRange ? "var(--surface-2)" : undefined,
                       boxShadow:
                         overIndex === i && dragIndex !== null && dragIndex !== i
                           ? (i < dragIndex ? "inset 0 2px 0 0 var(--accent)" : "inset 0 -2px 0 0 var(--accent)")
@@ -670,7 +718,7 @@ function PlaylistCard({
               />
             )}
             <span className="small faint">
-              Drag <span aria-hidden>⠿</span> to reorder by hand. Dots show mix quality from the previous track:
+              Drag <span aria-hidden>⠿</span> to reorder by hand, or set a section (highlighted) to reorder just that part. Dots show mix quality from the previous track:
               <span className="mix mix--great" /> smooth, <span className="mix mix--ok" /> ok, <span className="mix mix--jump" /> jump.
             </span>
 
@@ -790,7 +838,7 @@ function CreateCard({
   });
 
   const editingInfo = editing ? playlists.find((p) => p.id === editing.id) : undefined;
-  const editingHasSpotify = !!editingInfo?.spotifyPlaylistId;
+  const editingHasSpotify = !!(editingInfo?.spotifyId || editingInfo?.spotifyPlaylistId);
 
   const refreshData = () => {
     qc.invalidateQueries({ queryKey: ["playlists"] });
@@ -841,7 +889,7 @@ function CreateCard({
       <Card>
         <CardHeader
           title={`Save changes to "${editing.name}"`}
-          subtitle="You're editing an existing curated playlist in place"
+          subtitle="You're editing an existing playlist in place"
         />
         <CardBody>
           <div className="row">
