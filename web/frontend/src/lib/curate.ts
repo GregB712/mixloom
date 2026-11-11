@@ -236,6 +236,17 @@ export type Unit = Track[];
 const isLocked = (u: Unit, locked: Set<string>) => locked.has(u[0].uri);
 const last = (u: Unit) => u[u.length - 1];
 
+// Rebuild units from a saved playlist: consecutive tracks with the same block
+// number form one block; a null block is a single track.
+export function unitsFromBlocks(tracks: Track[], blocks: (number | null)[]): Unit[] {
+  const units: Unit[] = [];
+  tracks.forEach((t, i) => {
+    if (i > 0 && blocks[i] !== null && blocks[i] === blocks[i - 1]) units[units.length - 1].push(t);
+    else units.push([t]);
+  });
+  return units;
+}
+
 // Indices of the unlocked units that could swap into slot i, smoothest first:
 // ranked by the transition into the unit's first track and out of its last
 // track, after the swap.

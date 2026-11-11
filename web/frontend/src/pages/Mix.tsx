@@ -12,12 +12,17 @@ import { useToast } from "../components/ui/Toast";
 import { useDragAutoScroll } from "../hooks/useDragAutoScroll";
 import { useJobStream } from "../hooks/useJobStream";
 import { formatDuration } from "../lib/format";
-import { moveUnlocked, swapCandidates, totalDurationMs, transitionCost, type Unit } from "../lib/curate";
+import { moveUnlocked, swapCandidates, unitsFromBlocks, totalDurationMs, transitionCost, type Unit } from "../lib/curate";
 import { MixDot, TrackChips } from "./Curate";
 
 // Repeated clicks on one unit's swap button walk its ranked candidates, always
-// computed from the order before the first click.
+// computed from the order before the first click; the back button walks them
+// in reverse. Rank -1 is that original order.
 type Cycle = { index: number; base: Unit[]; candidates: number[]; rank: number };
+// What Save stores: the order, the blocks and the locks. Unsaved when it differs.
+const snapshot = (units: Unit[], locked: Set<string>) =>
+  JSON.stringify([units.map((u) => u.map((t) => t.uri)), [...locked].sort()]);
+
 // A continuous run of selected units, by unit index (inclusive).
 type Selection = { from: number; to: number };
 
@@ -29,7 +34,7 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
 
   const [playlistId, setPlaylistId] = useState<number | null>(null);
   const [units, setUnits] = useState<Unit[] | null>(null);
-  const [saved, setSaved] = useState<string[]>([]);
+  const [saved, setSaved] = useState("");
   const [locked, setLocked] = useState<Set<string>>(new Set());
   const [cycle, setCycle] = useState<Cycle | null>(null);
   const [sel, setSel] = useState<Selection | null>(null);
@@ -57,9 +62,15 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
     try {
       const ordered = await api.playlistTracks(id);
       if (latestLoad.current !== id) return;
-      const list = ordered.map((p) => byUri.get(p.uri)).filter((t): t is Track => !!t);
-      setUnits(list.map((t) => [t]));
-      setSaved(list.map((t) => t.uri));
+      const rows = ordered.flatMap((p) => {
+        const t = byUri.get(p.uri);
+        return t ? [{ t, block: p.block ?? null, locked: !!p.locked }] : [];
+      });
+      const loaded = unitsFromBlocks(rows.map((r) => r.t), rows.map((r) => r.block));
+      const lockSet = new Set(rows.filter((r) => r.locked).map((r) => r.t.uri));
+      setUnits(loaded);
+      setLocked(lockSet);
+      setSaved(snapshot(loaded, lockSet));
     } catch (e) {
       toast.notify((e as Error).message, "danger");
     }
@@ -73,16 +84,19 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
     setUnits(next);
   };
 
-  const swap = (k: number) => {
+  const swap = (k: number, dir: 1 | -1 = 1) => {
     if (!units) return;
     const same = cycle && cycle.index === k;
+    if (!same && dir === -1) return;
     const base = same ? cycle.base : units;
     const candidates = same ? cycle.candidates : swapCandidates(units, k, locked);
     if (!candidates.length) return toast.notify("No unlocked tracks to swap with.", "danger");
-    const rank = same ? (cycle.rank + 1) % candidates.length : 0;
-    const j = candidates[rank];
+    const rank = !same ? 0 : dir === 1 ? (cycle.rank + 1) % candidates.length : Math.max(-1, cycle.rank - 1);
     const next = [...base];
-    [next[k], next[j]] = [next[j], next[k]];
+    if (rank >= 0) {
+      const j = candidates[rank];
+      [next[k], next[j]] = [next[j], next[k]];
+    }
     setSel(null);
     setUnits(next);
     setCycle({ index: k, base, candidates, rank });
@@ -124,12 +138,17 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
   };
 
   const uris = tracks.map((t) => t.uri);
-  const dirty = uris.join() !== saved.join();
+  const dirty = !!units && snapshot(units, locked) !== saved;
 
   const save = useMutation({
-    mutationFn: () => api.updatePlaylistTracks(playlistId as number, uris),
+    mutationFn: async () => {
+      const snap = snapshot(units ?? [], locked);
+      const blocks = (units ?? []).filter((u) => u.length > 1).map((u) => u.map((t) => t.uri));
+      const r = await api.updatePlaylistTracks(playlistId as number, uris, { locked: [...locked], blocks });
+      return { ...r, snap };
+    },
     onSuccess: (r) => {
-      setSaved(uris);
+      setSaved(r.snap);
       qc.invalidateQueries({ queryKey: ["playlists"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
       toast.notify(`Saved ${r.count} tracks.`, "ok");
@@ -185,6 +204,8 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
 
       {playlistId !== null && (
         <Card>
+          {/* Sticks under the top bar, so Save and the selection actions stay in reach while scrolling. */}
+          <div className="mixhead">
           <CardHeader
             title={playlists.data?.find((p) => p.id === playlistId)?.name ?? "Playlist"}
             subtitle={units ? `${tracks.length} tracks · ${formatDuration(totalDurationMs(tracks))} · ${locked.size} locked` : "Loading…"}
@@ -203,6 +224,18 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
               ) : undefined
             }
           />
+          {sel && (
+            <div className="row mixsel" style={{ gap: "var(--space-2)" }}>
+              <span className="small">{selUnits.flat().length} tracks selected</span>
+              <div className="card__spacer" />
+              <Button size="sm" disabled={selUnits.length < 2} onClick={makeBlock}>Make block</Button>
+              {selUnits.some((u) => u.length > 1) && (
+                <Button variant="secondary" size="sm" onClick={splitBlocks}>Split block</Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={() => setSel(null)}>Clear</Button>
+            </div>
+          )}
+          </div>
           <CardBody>
             {units && env.spotify && (!onSpotify ? (
               <span className="small faint">This playlist isn't on Spotify yet. Create it from the Curate tab first; Mix only updates existing ones.</span>
@@ -220,17 +253,6 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
             )}
             {units && units.length > 0 && (
               <>
-                {sel && (
-                  <div className="row mixsel" style={{ gap: "var(--space-2)" }}>
-                    <span className="small">{selUnits.flat().length} tracks selected</span>
-                    <div className="card__spacer" />
-                    <Button size="sm" disabled={selUnits.length < 2} onClick={makeBlock}>Make block</Button>
-                    {selUnits.some((u) => u.length > 1) && (
-                      <Button variant="secondary" size="sm" onClick={splitBlocks}>Split block</Button>
-                    )}
-                    <Button variant="ghost" size="sm" onClick={() => setSel(null)}>Clear</Button>
-                  </div>
-                )}
                 <div ref={listRef} className="multiselect__box" style={{ maxHeight: "none", overflow: "visible" }}>
                   <Gap onAdd={() => setAddAt(0)} />
                   {units.map((u, k) => {
@@ -296,15 +318,29 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
                                   <span className="muted"> — {t.artists}</span>
                                 </span>
                                 <TrackChips track={t} />
+                                {cycling && head && (
+                                  <button
+                                    className="btn btn--ghost btn--sm"
+                                    disabled={cycle.rank < 0}
+                                    onClick={() => swap(k, -1)}
+                                    aria-label={`Back to the previous match for ${label}`}
+                                    title={cycle.rank === 0 ? "Back to the original track" : `Back to match ${cycle.rank}`}
+                                    style={{ color: "var(--brand)" }}
+                                  >‹</button>
+                                )}
                                 <button
                                   className="btn btn--ghost btn--sm"
                                   disabled={isLocked || !head}
                                   onClick={() => swap(k)}
                                   aria-label={`Swap ${label} for a smoother match`}
-                                  title={cycling ? `Match ${cycle.rank + 1} of ${cycle.candidates.length}, click for the next` : "Swap in the smoothest unlocked match"}
+                                  title={
+                                    !cycling ? "Swap in the smoothest unlocked match"
+                                    : cycle.rank < 0 ? "Original track, click for the best match"
+                                    : `Match ${cycle.rank + 1} of ${cycle.candidates.length}, click for the next`
+                                  }
                                   style={{ color: cycling ? "var(--brand)" : undefined, visibility: unitOnly }}
                                   tabIndex={head ? undefined : -1}
-                                >⇄{cycling ? ` ${cycle.rank + 1}` : ""}</button>
+                                >⇄{cycling && cycle.rank >= 0 ? ` ${cycle.rank + 1}` : ""}</button>
                                 <button
                                   className="btn btn--ghost btn--sm"
                                   onClick={() => toggleLock(u)}
@@ -326,7 +362,7 @@ export function Mix({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
                 </div>
                 <span className="small faint">
                   Drag <span aria-hidden>⠿</span> to reorder by hand (locked tracks stay put). Tick tracks next to each other to make a block that drags, swaps and locks as one;
-                  a block swaps by its first track. Hover between tracks to add one there. ⇄ swaps in the smoothest unlocked match; click again for the next.
+                  a block swaps by its first track. Save keeps the order, blocks and locks. Hover between tracks to add one there. ⇄ swaps in the smoothest unlocked match; click again for the next, ‹ to go back.
                   Dots show mix quality from the previous track.
                 </span>
               </>

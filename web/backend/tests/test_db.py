@@ -119,6 +119,26 @@ def test_save_and_update_curated(test_db):
     assert db.save_curated("Dup Build", dup)["count"] == 2
 
 
+def test_update_keeps_mix_locks_and_blocks(test_db):
+    a, b, c = "spotify:track:aaa", "spotify:track:bbb", "spotify:track:ccc"
+    pid = db.save_curated("Mix State", [a, b, c])["playlistId"]
+
+    def meta():
+        return [(t["uri"], t["locked"], t["block"] is not None) for t in db.playlist_tracks(pid)]
+
+    # The Mix tab sets locks and blocks explicitly.
+    db.update_playlist_tracks(pid, [a, b, c], locked=[c], blocks=[[a, b]])
+    assert meta() == [(a, False, True), (b, False, True), (c, True, False)]
+
+    # An order-only save (Curate, Player) keeps them for the tracks that remain.
+    db.update_playlist_tracks(pid, [c, a, b])
+    assert meta() == [(c, True, False), (a, False, True), (b, False, True)]
+
+    # Clearing them explicitly works too.
+    db.update_playlist_tracks(pid, [c, a, b], locked=[], blocks=[])
+    assert meta() == [(c, False, False), (a, False, False), (b, False, False)]
+
+
 def test_delete_playlist_keeps_tracks(test_db):
     saved = db.save_curated("ToDelete", ["spotify:track:aaa", "spotify:track:bbb"])
     pid = saved["playlistId"]
