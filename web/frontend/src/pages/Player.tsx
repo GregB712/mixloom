@@ -6,6 +6,7 @@ import { Button } from "../components/ui/Button";
 import { Card, CardBody } from "../components/ui/Card";
 import { Callout, EmptyState } from "../components/ui/EmptyState";
 import { LogPanel } from "../components/ui/LogPanel";
+import { Modal } from "../components/ui/Modal";
 import { TrackArt } from "../components/ui/TrackArt";
 import { useToast } from "../components/ui/Toast";
 import { useDragAutoScroll } from "../hooks/useDragAutoScroll";
@@ -69,6 +70,7 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
   // Snapshots for undo (each edit pushes the pre-edit list).
   const [history, setHistory] = useState<PlayerTrack[][]>([]);
   const [pushJobId, setPushJobId] = useState<string | null>(null);
+  const [newName, setNewName] = useState<string | null>(null); // open "push as new" dialog
   const [search, setSearch] = useState("");
   useEffect(() => { setWorking(null); setHistory([]); setPushJobId(null); setSearch(""); }, [selected]);
 
@@ -126,9 +128,10 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
     toast.notify(ok ? "Pushed to Spotify." : "Push to Spotify failed. See the log.", ok ? "ok" : "danger"),
   );
 
-  // `update` true => update the existing Spotify playlist in place.
+  // `update` true => update the existing Spotify playlist in place; otherwise
+  // create a new one called `name`.
   const pushMut = useMutation({
-    mutationFn: async (update: boolean) => {
+    mutationFn: async ({ update, name }: { update: boolean; name: string }) => {
       if (dirty) {
         await api.updatePlaylistTracks(selected as number, displayTracks.map((t) => t.uri));
         setWorking(null);
@@ -136,7 +139,7 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
         qc.invalidateQueries({ queryKey: ["playlistTracks", selected] });
         qc.invalidateQueries({ queryKey: ["playlists"] });
       }
-      const job = await api.createPlaylist(selected as number, selectedPl?.name ?? "", update);
+      const job = await api.createPlaylist(selected as number, name, update);
       return job.jobId;
     },
     onSuccess: (id) => { setPushJobId(id); qc.invalidateQueries({ queryKey: ["playlists"] }); },
@@ -248,7 +251,8 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
                         update && selectedPl?.spotifyId &&
                         !window.confirm(`Replace the tracks of "${selectedPl.name}" on Spotify with this list? Any changes made on Spotify since the export are overwritten.`)
                       ) return;
-                      pushMut.mutate(update);
+                      if (update) pushMut.mutate({ update, name: selectedPl?.name ?? "" });
+                      else setNewName(selectedPl?.name ?? "");
                     }}
                   />
                 }
@@ -258,6 +262,34 @@ function PlayerBody({ env, auth }: { env: EnvFlags; auth: AuthStatus }) {
               <ResyncPanel playlist={selectedPl} auth={auth} />
             )}
             {pushJobId && <LogPanel lines={pushStream.lines} status={pushStream.status} />}
+            {newName !== null && (
+              <Modal
+                open
+                title="Push as a new Spotify playlist"
+                onClose={() => setNewName(null)}
+                footer={
+                  <>
+                    <Button variant="ghost" onClick={() => setNewName(null)}>Cancel</Button>
+                    <Button type="submit" form="push-new-form" disabled={!newName.trim()}>Create on Spotify</Button>
+                  </>
+                }
+              >
+                <form
+                  id="push-new-form"
+                  className="field"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!newName.trim()) return;
+                    pushMut.mutate({ update: false, name: newName.trim() });
+                    setNewName(null);
+                  }}
+                >
+                  <label className="label" htmlFor="push-new-name">Playlist name</label>
+                  <input id="push-new-name" className="input" autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} />
+                  <span className="small faint">Creates a new private playlist on Spotify with the tracks in the order shown.</span>
+                </form>
+              </Modal>
+            )}
           </CardBody>
         </Card>
       </div>
