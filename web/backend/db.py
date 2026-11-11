@@ -99,7 +99,7 @@ def playlist_tracks(playlist_id: int) -> list[dict] | None:
         rows = conn.execute(
             """
             SELECT t.spotify_uri, t.title, t.artists_text, t.album, t.duration_ms,
-                   t.album_art_url
+                   t.album_art_url, pt.locked, pt.block
             FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = %s AND t.spotify_uri LIKE 'spotify:track:%%'
             ORDER BY pt.position, lower(t.title)
@@ -110,6 +110,7 @@ def playlist_tracks(playlist_id: int) -> list[dict] | None:
         {
             "uri": r[0], "title": r[1] or "", "artists": r[2] or "",
             "album": r[3] or "", "durationMs": r[4], "albumArt": r[5],
+            "locked": r[6], "block": r[7],
         }
         for r in rows
     ]
@@ -402,11 +403,15 @@ def missing_tracks(playlist_ids: list[int]) -> list[dict]:
     return out
 
 
-def _insert_positions(cur, playlist_id: int, ordered: list[tuple[str, int]]) -> None:
+def _insert_positions(cur, playlist_id: int, ordered: list[tuple[str, int]],
+                      locked: set[str] = frozenset(), block_of: dict[str, int] | None = None) -> None:
     # executemany pipelines the rows into one round trip instead of one per track.
+    block_of = block_of or {}
     cur.executemany(
-        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (%s, %s, %s)",
-        [(playlist_id, track_id, pos) for pos, (_, track_id) in enumerate(ordered)],
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position, locked, block) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        [(playlist_id, track_id, pos, uri in locked, block_of.get(uri))
+         for pos, (uri, track_id) in enumerate(ordered)],
     )
 
 
@@ -431,10 +436,14 @@ def save_curated(name: str, uris: list[str]) -> dict | None:
     return {"playlistId": pid, "name": name, "count": len(ordered)}
 
 
-def update_playlist_tracks(playlist_id: int, uris: list[str]) -> dict | None:
+def update_playlist_tracks(playlist_id: int, uris: list[str],
+                           locked: list[str] | None = None,
+                           blocks: list[list[str]] | None = None) -> dict | None:
     """Replace a playlist's tracks with the given ordered URIs (edit in place).
-    Returns None if the playlist does not exist or none of the URIs resolve to a
-    track."""
+    `locked` (track URIs) and `blocks` (lists of consecutive URIs) set the Mix
+    tab's locks and blocks; when omitted, each remaining track keeps the ones it
+    had. Returns None if the playlist does not exist or none of the URIs resolve
+    to a track."""
     uris = list(dict.fromkeys(uris))  # a playlist holds each track once
     with _connect() as conn:
         with conn.cursor() as cur:
@@ -448,8 +457,18 @@ def update_playlist_tracks(playlist_id: int, uris: list[str]) -> dict | None:
             ordered = [(u, by_uri[u]) for u in uris if u in by_uri]
             if not ordered:
                 return None
+            prev = cur.execute(
+                """SELECT t.spotify_uri, pt.locked, pt.block FROM playlist_tracks pt
+                   JOIN tracks t ON t.id = pt.track_id WHERE pt.playlist_id = %s""",
+                (playlist_id,),
+            ).fetchall()
+            lock_set = set(locked) if locked is not None else {r[0] for r in prev if r[1]}
+            block_of = (
+                {u: n for n, b in enumerate(blocks) if len(b) > 1 for u in b}
+                if blocks is not None else {r[0]: r[2] for r in prev if r[2] is not None}
+            )
             cur.execute("DELETE FROM playlist_tracks WHERE playlist_id = %s", (playlist_id,))
-            _insert_positions(cur, playlist_id, ordered)
+            _insert_positions(cur, playlist_id, ordered, lock_set, block_of)
         conn.commit()
     return {"playlistId": playlist_id, "count": len(ordered)}
 

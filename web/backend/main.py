@@ -266,13 +266,15 @@ def playlist_tracks_endpoint(playlist_id: int):
 
 class PlaylistTracksBody(BaseModel):
     uris: list[str]
+    locked: list[str] | None = None  # Mix tab locks; None keeps the current ones
+    blocks: list[list[str]] | None = None  # Mix tab blocks; None keeps the current ones
 
 
 @app.put("/api/playlists/{playlist_id}/tracks")
 def update_playlist_tracks_endpoint(playlist_id: int, body: PlaylistTracksBody):
     if not body.uris:
         raise HTTPException(400, "A playlist needs at least one track.")
-    result = db.update_playlist_tracks(playlist_id, body.uris)
+    result = db.update_playlist_tracks(playlist_id, body.uris, body.locked, body.blocks)
     if result is None:
         raise HTTPException(404, "Playlist not found, or none of its tracks are in the library.")
     return result

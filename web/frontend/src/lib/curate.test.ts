@@ -11,6 +11,7 @@ import {
   smoothDanceOrder,
   moveUnlocked,
   swapCandidates,
+  unitsFromBlocks,
   totalDurationMs,
   vibeGroups,
 } from "./curate";
@@ -278,5 +279,18 @@ describe("moveUnlocked", () => {
     const list = [[a], [b], [c], [d]];
     expect(moveUnlocked(list, 1, 3, new Set(["b"]))).toBe(list);
     expect(moveUnlocked(list, 0, 1, new Set(["b"]))).toBe(list);
+  });
+});
+
+describe("unitsFromBlocks", () => {
+  const [a, b, c, d, e] = ["a", "b", "c", "d", "e"].map((uri) => track({ uri }));
+  const shape = (us: Track[][]) => us.map((u) => u.map((t) => t.uri).join("")).join(",");
+
+  it("groups consecutive tracks that share a block number", () => {
+    expect(shape(unitsFromBlocks([a, b, c, d, e], [null, 1, 1, null, 2]))).toBe("a,bc,d,e");
+  });
+
+  it("splits a block whose tracks are no longer next to each other", () => {
+    expect(shape(unitsFromBlocks([a, b, c], [1, null, 1]))).toBe("a,b,c");
   });
 });

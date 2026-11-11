@@ -211,6 +211,7 @@ button { font-family: inherit; }
 .navitem__icon { font-size: 17px; width: 22px; text-align: center; }
 
 .main {
+  --topbar-h: 72px; /* height of the sticky .topbar, for things that stick below it */
   position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -411,8 +412,14 @@ button { font-family: inherit; }
 .mixunit--block { border-left: 3px solid var(--brand); }
 .mixunit--block .option { border-bottom-style: dashed; }
 .mixsel {
-  padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
-  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  padding: var(--space-2) var(--space-5);
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  border-bottom: 1px solid var(--border);
+}
+/* Mix tab: the playlist header sticks just under the top bar while scrolling. */
+.mixhead {
+  position: sticky; top: var(--topbar-h); z-index: 10;
+  background: var(--surface); border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
 /* Mix tab: hover strip between rows that reveals an insert button */
@@ -625,11 +632,13 @@ table.data tr:hover td { background: var(--surface-hover); }
   .nav { flex-direction: row; gap: var(--space-1); }
   .navitem { white-space: nowrap; padding: var(--space-2) var(--space-3); }
   .navitem__icon { display: none; }
-  .main { overflow-y: visible; }
+  /* clip, not hidden: hidden would make .main a non-scrolling scroll box and break sticky headers */
+  .main { overflow-y: visible; overflow-x: clip; min-width: 0; }
 }
 
 @media (max-width: 640px) {
   .content { padding: var(--space-4); }
+  .main { --topbar-h: 56px; }
   .topbar { padding: var(--space-3) var(--space-4); }
   .topbar__env { display: none; }
   .barrow { grid-template-columns: 90px 1fr auto; }

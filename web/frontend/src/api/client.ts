@@ -11,6 +11,8 @@ export type PlayerTrack = {
   album: string;
   durationMs: number | null;
   albumArt: string | null;
+  locked?: boolean; // Mix tab lock
+  block?: number | null; // Mix tab block: consecutive tracks sharing a number
 };
 
 export type JobStatus = "pending" | "running" | "succeeded" | "failed";
@@ -217,8 +219,9 @@ export const api = {
 
   playlists: () => get<PlaylistInfo[]>("/api/playlists"),
   playlistTracks: (id: number) => get<PlayerTrack[]>(`/api/playlists/${id}/tracks`),
-  updatePlaylistTracks: (id: number, uris: string[]) =>
-    put<{ playlistId: number; count: number }>(`/api/playlists/${id}/tracks`, { uris }),
+  // Without `mix`, the playlist keeps its Mix locks and blocks.
+  updatePlaylistTracks: (id: number, uris: string[], mix?: { locked: string[]; blocks: string[][] }) =>
+    put<{ playlistId: number; count: number }>(`/api/playlists/${id}/tracks`, { uris, ...mix }),
   deletePlaylist: (id: number) =>
     del<{ playlistId: number; name: string }>(`/api/playlists/${id}`),
   stats: (playlistId: number | null) =>
